@@ -1,0 +1,29 @@
+[Unit]
+Description=CrowdTrans Transcription Service
+After=network.target mnt-visage\x2daudio.mount
+Wants=mnt-visage\x2daudio.mount
+
+[Service]
+Type=simple
+User=crowdtrans
+Group=crowdtrans
+WorkingDirectory=/opt/crowdtrans
+ExecStart=/opt/crowdtrans/venv/bin/python -m crowdtrans.cli run-service
+Restart=on-failure
+RestartSec=30
+EnvironmentFile=/opt/crowdtrans/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crowdtrans-service
+
+# Security
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/crowdtrans/data
+ReadOnlyPaths=/mnt/visage-audio
+
+[Install]
+WantedBy=multi-user.target

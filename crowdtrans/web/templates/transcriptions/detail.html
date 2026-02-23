@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}{{ txn.accession_number or 'Transcription' }} — CrowdTrans{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <a href="/transcriptions/" class="text-sm text-indigo-600 hover:text-indigo-800">&larr; Back to list</a>
+</div>
+
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900">{{ txn.accession_number or 'No Accession' }}</h1>
+        <p class="text-sm text-gray-500 mt-1">
+            {% set site_colors = {'visage': 'bg-blue-100 text-blue-700', 'karisma': 'bg-purple-100 text-purple-700'} %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ site_colors.get(txn.site_id, 'bg-gray-100 text-gray-700') }}">{{ site_name }}</span>
+            {{ txn.procedure_description or '' }}
+            {% if txn.modality_code %}<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ txn.modality_code }}</span>{% endif %}
+        </p>
+    </div>
+    {% set status_colors = {
+        'pending': 'bg-yellow-100 text-yellow-800',
+        'transcribing': 'bg-blue-100 text-blue-800',
+        'complete': 'bg-green-100 text-green-800',
+        'failed': 'bg-red-100 text-red-800',
+        'skipped': 'bg-gray-100 text-gray-800',
+    } %}
+    <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium {{ status_colors.get(txn.status, 'bg-gray-100 text-gray-800') }}">{{ txn.status }}</span>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Report text (2/3) -->
+    <div class="lg:col-span-2">
+        <div class="bg-white rounded-lg shadow">
+            <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Transcription</h2>
+                {% if txn.transcript_text %}
+                <button onclick="copyReport()" id="copy-btn"
+                        class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                    <span id="copy-label">Copy Report</span>
+                </button>
+                {% endif %}
+            </div>
+            <div class="p-5">
+                {% if txn.transcript_text %}
+                <div id="report-text" class="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap leading-relaxed">{{ txn.transcript_text }}</div>
+                {% elif txn.status == 'failed' %}
+                <div class="text-red-600 text-sm">
+                    <p class="font-medium">Transcription failed</p>
+                    {% if txn.error_message %}<p class="mt-1 text-red-500">{{ txn.error_message }}</p>{% endif %}
+                    <button hx-post="/api/retry/{{ txn.id }}" hx-swap="none"
+                            onclick="this.textContent='Queued...'; this.disabled=true"
+                            class="mt-3 inline-flex items-center px-3 py-1.5 border border-red-300 rounded-md text-sm font-medium text-red-700 bg-white hover:bg-red-50">
+                        Retry Transcription
+                    </button>
+                </div>
+                {% elif txn.status == 'skipped' %}
+                <div class="text-gray-500 text-sm">
+                    <p>Transcription was skipped.</p>
+                    {% if txn.error_message %}<p class="mt-1">{{ txn.error_message }}</p>{% endif %}
+                </div>
+                {% elif txn.status == 'pending' %}
+                <div class="text-yellow-600 text-sm">Waiting to be transcribed...</div>
+                {% elif txn.status == 'transcribing' %}
+                <div class="text-blue-600 text-sm">Transcription in progress...</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Metadata sidebar (1/3) -->
+    <div class="space-y-4">
+        <!-- Patient -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Patient</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Name</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.patient_title or '' }} {{ txn.patient_given_names or '' }} {{ txn.patient_family_name or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">UR</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.patient_ur or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">DOB</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.patient_dob or '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Study -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Study</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Accession</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.accession_number or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Procedure</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.procedure_description or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Modality</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.modality_name or txn.modality_code or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Body Part</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.body_part or '—' }}</dd>
+                </div>
+                {% if txn.reason_for_study %}
+                <div>
+                    <dt class="text-gray-400">Reason for Study</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.reason_for_study }}</dd>
+                </div>
+                {% endif %}
+                {% if txn.complaint %}
+                <div>
+                    <dt class="text-gray-400">Clinical Notes</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.complaint }}</dd>
+                </div>
+                {% endif %}
+                <div>
+                    <dt class="text-gray-400">Dictation Date</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.dictation_date.strftime('%Y-%m-%d %H:%M') if txn.dictation_date else '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Doctor -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Reporting Doctor</h3>
+            <p class="text-sm font-medium text-gray-900">{{ txn.doctor_title or '' }} {{ txn.doctor_given_names or '' }} {{ txn.doctor_family_name or '—' }}</p>
+        </div>
+
+        <!-- Referrer -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Referrer</h3>
+            <p class="text-sm font-medium text-gray-900">{{ txn.referrer_title or '' }} {{ txn.referrer_given_names or '' }} {{ txn.referrer_family_name or '—' }}</p>
+        </div>
+
+        <!-- Facility -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Facility</h3>
+            <p class="text-sm font-medium text-gray-900">{{ txn.facility_name or '—' }}</p>
+        </div>
+
+        <!-- Processing info -->
+        {% if txn.status == 'complete' %}
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Processing</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Confidence</dt>
+                    <dd class="font-medium text-gray-900">{% if txn.confidence %}{{ "%.1f"|format(txn.confidence * 100) }}%{% else %}—{% endif %}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Processing Time</dt>
+                    <dd class="font-medium text-gray-900">{% if txn.processing_duration_ms %}{{ "%.1f"|format(txn.processing_duration_ms / 1000) }}s{% else %}—{% endif %}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Audio Duration</dt>
+                    <dd class="font-medium text-gray-900">{% if txn.audio_duration_ms %}{{ "%.1f"|format(txn.audio_duration_ms / 1000) }}s{% else %}—{% endif %}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Deepgram Request</dt>
+                    <dd class="font-mono text-xs text-gray-500 break-all">{{ txn.deepgram_request_id or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Completed At</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.transcription_completed_at.strftime('%Y-%m-%d %H:%M:%S') if txn.transcription_completed_at else '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

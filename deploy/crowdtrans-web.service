@@ -1,0 +1,27 @@
+[Unit]
+Description=CrowdTrans Web Interface
+After=network.target
+
+[Service]
+Type=simple
+User=crowdtrans
+Group=crowdtrans
+WorkingDirectory=/opt/crowdtrans
+ExecStart=/opt/crowdtrans/venv/bin/python -m crowdtrans.cli run-web
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/opt/crowdtrans/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crowdtrans-web
+
+# Security
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/crowdtrans/data
+
+[Install]
+WantedBy=multi-user.target

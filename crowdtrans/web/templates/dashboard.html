@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — CrowdTrans{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <div class="flex items-center space-x-2">
+        <span class="text-sm text-gray-500">Site:</span>
+        <a href="/?site=" class="px-2 py-1 rounded text-sm {% if not selected_site %}bg-indigo-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">All</a>
+        {% for sc in site_configs %}
+        <a href="/?site={{ sc.site_id }}" class="px-2 py-1 rounded text-sm {% if selected_site == sc.site_id %}bg-indigo-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">{{ sc.site_id|capitalize }}</a>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Stats cards -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <div class="bg-white rounded-lg shadow p-5">
+        <div class="text-sm font-medium text-gray-500">Total Dictations</div>
+        <div class="mt-1 text-3xl font-bold text-gray-900">{{ "{:,}".format(total) }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+        <div class="text-sm font-medium text-gray-500">Completed</div>
+        <div class="mt-1 text-3xl font-bold text-green-600">{{ "{:,}".format(status_counts.get('complete', 0)) }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+        <div class="text-sm font-medium text-gray-500">Today</div>
+        <div class="mt-1 text-3xl font-bold text-indigo-600">{{ "{:,}".format(today_count) }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+        <div class="text-sm font-medium text-gray-500">Avg Confidence</div>
+        <div class="mt-1 text-3xl font-bold text-gray-900">
+            {% if avg_confidence %}{{ "%.1f"|format(avg_confidence * 100) }}%{% else %}—{% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Status + Service info -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <div class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Status Breakdown</h2>
+        <div class="space-y-3">
+            {% for s, label, color in [
+                ('pending', 'Pending', 'bg-yellow-100 text-yellow-800'),
+                ('transcribing', 'Transcribing', 'bg-blue-100 text-blue-800'),
+                ('complete', 'Complete', 'bg-green-100 text-green-800'),
+                ('failed', 'Failed', 'bg-red-100 text-red-800'),
+                ('skipped', 'Skipped', 'bg-gray-100 text-gray-800'),
+            ] %}
+            <div class="flex items-center justify-between">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ color }}">{{ label }}</span>
+                <span class="text-sm font-medium text-gray-700">{{ "{:,}".format(status_counts.get(s, 0)) }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Sites</h2>
+        <div class="space-y-4">
+            {% for wm in watermarks %}
+            <div class="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-sm font-semibold text-gray-800">{{ wm.site_id|capitalize }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">active</span>
+                </div>
+                <dl class="grid grid-cols-2 gap-x-4 text-xs text-gray-500">
+                    <div>
+                        <dt>Watermark</dt>
+                        <dd class="font-medium text-gray-700">{{ "{:,}".format(wm.last_dictation_id) }}</dd>
+                    </div>
+                    <div>
+                        <dt>Last poll</dt>
+                        <dd class="font-medium text-gray-700">{{ wm.last_poll_at.strftime('%Y-%m-%d %H:%M') if wm.last_poll_at else '—' }}</dd>
+                    </div>
+                </dl>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Recent transcriptions -->
+<div class="bg-white rounded-lg shadow">
+    <div class="px-5 py-4 border-b border-gray-200">
+        <h2 class="text-lg font-semibold text-gray-900">Recent Transcriptions</h2>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Site</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Accession</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Patient</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Modality</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Doctor</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Confidence</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Completed</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for t in recent %}
+                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/transcriptions/{{ t.id }}'">
+                    <td class="px-4 py-3 text-xs">
+                        {% set site_colors = {'visage': 'bg-blue-100 text-blue-700', 'karisma': 'bg-purple-100 text-purple-700'} %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ site_colors.get(t.site_id, 'bg-gray-100 text-gray-700') }}">{{ t.site_id }}</span>
+                    </td>
+                    <td class="px-4 py-3 text-sm font-medium text-indigo-600">{{ t.accession_number or '—' }}</td>
+                    <td class="px-4 py-3 text-sm text-gray-900">{{ t.patient_family_name or '' }}{% if t.patient_given_names %}, {{ t.patient_given_names }}{% endif %}</td>
+                    <td class="px-4 py-3 text-sm"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ t.modality_code or '—' }}</span></td>
+                    <td class="px-4 py-3 text-sm text-gray-700">{{ t.doctor_family_name or '—' }}</td>
+                    <td class="px-4 py-3 text-sm text-gray-700">{% if t.confidence %}{{ "%.1f"|format(t.confidence * 100) }}%{% else %}—{% endif %}</td>
+                    <td class="px-4 py-3 text-sm text-gray-500">{{ t.transcription_completed_at.strftime('%Y-%m-%d %H:%M') if t.transcription_completed_at else '—' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">No transcriptions yet</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
