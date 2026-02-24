@@ -11,6 +11,7 @@ from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal, get_db
 from crowdtrans.models import Transcription, Watermark
 from crowdtrans.transcriber.deepgram_client import transcribe_buffer, transcribe_file
+from crowdtrans.transcriber.formatter import format_transcript
 from crowdtrans.transcriber.keyterms import get_keyterms
 
 logger = logging.getLogger(__name__)
@@ -328,6 +329,12 @@ def _mark_failed(session, site: SiteConfig, txn: Transcription, error: Exception
 def _store_result(session, site: SiteConfig, txn: Transcription, result):
     txn.status = "complete"
     txn.transcript_text = result.transcript_text
+    txn.formatted_text = format_transcript(
+        result.transcript_text,
+        modality_code=txn.modality_code,
+        procedure_description=txn.procedure_description,
+        clinical_history=txn.complaint,
+    )
     txn.confidence = result.confidence
     txn.deepgram_request_id = result.request_id
     txn.processing_duration_ms = result.processing_duration_ms

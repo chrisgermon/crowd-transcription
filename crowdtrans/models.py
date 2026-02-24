@@ -128,7 +128,8 @@ class Transcription(Base):
     retry_count = Column(Integer, nullable=False, default=0)
 
     # Transcription results
-    transcript_text = Column(Text, nullable=True)
+    transcript_text = Column(Text, nullable=True)  # raw Deepgram output
+    formatted_text = Column(Text, nullable=True)    # post-processed with headings
     confidence = Column(Float, nullable=True)
     deepgram_request_id = Column(String, nullable=True)
     processing_duration_ms = Column(Integer, nullable=True)

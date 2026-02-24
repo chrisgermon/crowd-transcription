@@ -53,10 +53,50 @@ function updateAudioFields(selectEl, siteId) {
     }
 }
 
+/* ── Report view toggle ── */
+
+function showFormatted() {
+    var formatted = document.getElementById('report-formatted');
+    var raw = document.getElementById('report-raw');
+    var btnFormatted = document.getElementById('btn-formatted');
+    var btnRaw = document.getElementById('btn-raw');
+    if (formatted) formatted.classList.remove('hidden');
+    if (raw) raw.classList.add('hidden');
+    if (btnFormatted) {
+        btnFormatted.classList.add('bg-indigo-600', 'text-white', 'border-indigo-600');
+        btnFormatted.classList.remove('bg-white', 'text-gray-700', 'border-gray-300');
+    }
+    if (btnRaw) {
+        btnRaw.classList.add('bg-white', 'text-gray-700', 'border-gray-300');
+        btnRaw.classList.remove('bg-indigo-600', 'text-white', 'border-indigo-600');
+    }
+}
+
+function showRaw() {
+    var formatted = document.getElementById('report-formatted');
+    var raw = document.getElementById('report-raw');
+    var btnFormatted = document.getElementById('btn-formatted');
+    var btnRaw = document.getElementById('btn-raw');
+    if (formatted) formatted.classList.add('hidden');
+    if (raw) raw.classList.remove('hidden');
+    if (btnRaw) {
+        btnRaw.classList.add('bg-indigo-600', 'text-white', 'border-indigo-600');
+        btnRaw.classList.remove('bg-white', 'text-gray-700', 'border-gray-300');
+    }
+    if (btnFormatted) {
+        btnFormatted.classList.add('bg-white', 'text-gray-700', 'border-gray-300');
+        btnFormatted.classList.remove('bg-indigo-600', 'text-white', 'border-indigo-600');
+    }
+}
+
 /* ── Report copy ── */
 
 function copyReport() {
-    const text = document.getElementById('report-text');
+    var formatted = document.getElementById('report-formatted');
+    var raw = document.getElementById('report-raw');
+    // Copy whichever view is currently visible
+    var text = (formatted && !formatted.classList.contains('hidden')) ? formatted :
+               (raw && !raw.classList.contains('hidden')) ? raw : null;
     if (!text) return;
 
     navigator.clipboard.writeText(text.textContent).then(function () {

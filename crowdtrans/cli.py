@@ -1,4 +1,4 @@
-"""Click CLI for CrowdTrans."""
+"""Click CLI for CrowdScription."""
 
 import logging
 import sys
@@ -14,7 +14,7 @@ logging.basicConfig(
 
 @click.group()
 def cli():
-    """CrowdTrans: Radiology Dictation Transcription Platform."""
+    """CrowdScription: Radiology Dictation Transcription Platform."""
 
 
 @cli.command()
@@ -111,6 +111,128 @@ def sites():
     for s in settings.get_site_configs():
         status = "enabled" if s.enabled else "disabled"
         click.echo(f"  {s.site_id:12s}  {s.site_name:40s}  {s.ris_type:8s}  {s.db_host}:{s.db_port}  [{status}]")
+
+
+@cli.command()
+def reformat():
+    """Re-format all completed transcriptions using the latest formatter."""
+    from crowdtrans.database import SessionLocal, init_db
+    from crowdtrans.models import Transcription
+    from crowdtrans.transcriber.formatter import format_transcript
+    init_db()
+    with SessionLocal() as session:
+        txns = (
+            session.query(Transcription)
+            .filter(Transcription.status == "complete", Transcription.transcript_text.isnot(None))
+            .all()
+        )
+        click.echo(f"Re-formatting {len(txns)} completed transcriptions...")
+        for i, txn in enumerate(txns, 1):
+            txn.formatted_text = format_transcript(
+                txn.transcript_text,
+                modality_code=txn.modality_code,
+                procedure_description=txn.procedure_description,
+                clinical_history=txn.complaint,
+            )
+            if i % 50 == 0:
+                session.commit()
+                click.echo(f"  {i}/{len(txns)} done")
+        session.commit()
+        click.echo(f"Done. Re-formatted {len(txns)} transcriptions.")
+
+
+@cli.command()
+@click.option("--limit", default=5000, type=int, help="Max reports to analyze")
+def learn(limit):
+    """Analyze Visage reports to show formatting patterns and validate classifier."""
+    import re
+    from collections import Counter, defaultdict
+
+    from crowdtrans.config_store import get_config_store
+    from crowdtrans.database import SessionLocal, init_db
+    from crowdtrans.models import Transcription
+    from crowdtrans.transcriber.formatter import format_transcript
+
+    init_db()
+    store = get_config_store()
+    sites = store.get_enabled_site_configs()
+    visage_site = next((s for s in sites if s.ris_type == "visage"), None)
+    if not visage_site:
+        click.echo("No enabled Visage site found.", err=True)
+        sys.exit(1)
+
+    import psycopg2
+    import psycopg2.extras
+    conn = psycopg2.connect(
+        host=visage_site.db_host, port=visage_site.db_port,
+        dbname=visage_site.db_name, user=visage_site.db_user,
+        password=visage_site.db_password,
+        options="-c default_transaction_read_only=on",
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )
+    cur = conn.cursor()
+
+    # Fetch matched report pairs
+    cur.execute("""
+        SELECT d.id AS dictation_id, cd.report_body,
+               m.code AS modality_code, p.description AS procedure_description,
+               doc.family_name AS doctor_family_name, dr.title AS report_title
+        FROM dictation d
+        JOIN clinical_document cd ON cd.id = d.clinical_document_id
+        JOIN diagnostic_report dr ON dr.id = cd.diagnostic_report_id
+        JOIN clinical_document_procedure cdp ON cdp.clinical_document_id = cd.id
+        JOIN procedure_ p ON p.id = cdp.procedure_id
+        LEFT JOIN procedure_type pt2 ON pt2.id = p.procedure_type_id
+        LEFT JOIN modality m ON m.id = pt2.modality_id
+        LEFT JOIN doctor doc ON doc.id = d.doctor_id
+        WHERE cd.status = 'FINAL' AND d.duration > 0
+        AND cd.report_body IS NOT NULL AND length(cd.report_body) > 50
+        ORDER BY d.id DESC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+
+    click.echo(f"Analyzed {len(rows)} reports from Visage")
+
+    # Extract heading sequences
+    heading_seqs = defaultdict(Counter)
+    for row in rows:
+        html = row['report_body']
+        mod = row['modality_code'] or 'UNKNOWN'
+        headings = []
+        plain = re.sub(r'<[^>]+>', ' ', html)
+        for m in re.finditer(
+            r'\b(CLINICAL HISTORY|CLINICAL INDICATION|CLINICAL DETAILS|FINDINGS|CONCLUSION|PROCEDURE|TECHNIQUE|IMPRESSION|COMMENT|REPORT)\b',
+            plain,
+        ):
+            headings.append(m.group(1))
+        seq = ' > '.join(headings) if headings else '(none)'
+        heading_seqs[mod][seq] += 1
+
+    click.echo("\nHeading patterns by modality (top 3 each):")
+    for mod in sorted(heading_seqs.keys()):
+        click.echo(f"  [{mod}]")
+        for seq, c in heading_seqs[mod].most_common(3):
+            click.echo(f"    {c:4d}x  {seq}")
+
+    # Compare with our transcriptions if available
+    with SessionLocal() as session:
+        our_txns = (
+            session.query(Transcription)
+            .filter(Transcription.status == "complete", Transcription.formatted_text.isnot(None))
+            .limit(10)
+            .all()
+        )
+        if our_txns:
+            click.echo(f"\nSample formatted output (latest {len(our_txns)}):")
+            for txn in our_txns[:3]:
+                click.echo(f"\n  --- Dictation {txn.source_dictation_id} | {txn.modality_code} ---")
+                for line in txn.formatted_text.split('\n')[:8]:
+                    click.echo(f"  {line}")
+                if txn.formatted_text.count('\n') > 8:
+                    click.echo(f"  ... ({txn.formatted_text.count(chr(10)) + 1} lines total)")
+
+    click.echo("\nDone.")
 
 
 if __name__ == "__main__":

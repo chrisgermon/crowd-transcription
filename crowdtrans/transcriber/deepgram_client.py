@@ -33,12 +33,13 @@ def _build_options(keyterms: list[str] | None = None) -> PrerecordedOptions:
         language=language,
         smart_format=True,
         punctuate=True,
+        dictation=True,
         paragraphs=True,
         utterances=True,
         numerals=True,
     )
     if keyterms:
-        options.keywords = keyterms
+        options.extra = {"keyterm": keyterms}
     return options
 
 

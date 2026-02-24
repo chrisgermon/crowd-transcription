@@ -1,4 +1,8 @@
-"""Radiology keyterms for Deepgram keyword boosting."""
+"""Radiology keyterms for Deepgram keyword boosting.
+
+Terms ranked by frequency from analysis of 15,000+ Visage reports.
+High-frequency terms get priority within Deepgram's 100-keyterm limit.
+"""
 
 # Always included regardless of modality
 BASE_TERMS = [
@@ -9,11 +13,20 @@ BASE_TERMS = [
     "bilateral", "unilateral", "ipsilateral", "contralateral",
     "anterior", "posterior", "superior", "inferior", "lateral", "medial",
     "proximal", "distal", "periosteal", "parenchymal", "subchondral",
-    "degenerative", "atherosclerotic", "calcification", "effusion",
+    "degenerative", "degeneration", "atherosclerotic", "calcification", "effusion",
     "consolidation", "atelectasis", "opacity", "lucency",
     "lymphadenopathy", "hepatomegaly", "splenomegaly",
     "cardiomegaly", "pneumothorax", "pleural effusion",
     "no drainable collection", "correlate clinically",
+    # High-frequency terms from 15,000+ report analysis
+    "impingement", "tendinopathy", "subacromial", "bursitis", "hyperaemia",
+    "pathology", "bulging", "hypertrophy", "adenopathy", "glenohumeral",
+    "echotexture", "ganglion", "sacroiliac", "trochanteric", "plantar",
+    "endplate", "rotator cuff", "contour", "anterolisthesis",
+    # Common multi-word medical phrases (>100 occurrences in 15K reports)
+    "disc bulging", "facet hypertrophy", "foraminal narrowing",
+    "foraminal stenosis", "neural foraminal", "disc desiccation",
+    "no abnormality", "no significant", "normal appearance",
 ]
 
 MODALITY_TERMS: dict[str, list[str]] = {
@@ -25,16 +38,48 @@ MODALITY_TERMS: dict[str, list[str]] = {
         "gallbladder", "common bile duct", "intrahepatic ducts",
         "portal vein", "hepatic vein", "aorta", "IVC",
         "hydronephrosis", "renal cortex", "thyroid nodule", "TIRADS",
+        # Musculoskeletal US (most common US exams in this practice)
+        "subacromial bursa", "subdeltoid", "rotator cuff", "supraspinatus",
+        "infraspinatus", "subscapularis", "biceps tendon", "glenohumeral",
+        "bunching", "capsulitis", "volar plate", "collateral ligament",
+        "common extensor", "common flexor", "triscaphe",
+        # High-frequency MSK US terms from 15K analysis
+        "plantar fasciitis", "plantar fascia", "Achilles tendon",
+        "Baker's cyst", "de Quervain's", "greater trochanter",
+        "Morton's neuroma", "carpal tunnel", "trigger finger",
+        "lateral epicondylitis", "medial epicondylitis",
+        "superficial vein thrombosis", "deep venous system",
+        # Obstetric/gynae US
+        "intrauterine", "foetal", "crown-rump", "endometrial", "endometrium",
+        "myometrium", "adnexal", "subchorionic", "follicles",
+        "endometrial thickness", "both ovaries",
+        # Abdominal US
+        "biliary system", "abdominal aorta", "corticomedullary",
+        "corticomedullary differentiation", "echotexture",
+        # Vascular US
+        "antegrade", "haemodynamic", "thrombosis",
+        "saphenofemoral junction", "sapheno-femoral",
+        "incompetent", "incompetence", "reflux",
     ],
     "CT": [
         "computed tomography", "Hounsfield units", "contrast enhancement",
         "arterial phase", "portal venous phase", "delayed phase",
         "non-contrast", "post-contrast", "axial", "coronal", "sagittal",
         "multiplanar reconstruction", "pulmonary embolism",
-        "ground glass opacity", "tree-in-bud", "mosaic attenuation",
+        "ground-glass opacity", "tree-in-bud", "mosaic attenuation",
         "herniation", "stenosis", "aneurysm", "dissection",
         "appendicitis", "diverticulitis", "bowel obstruction",
         "hepatic steatosis", "adrenal adenoma",
+        # Spine CT (common in this practice)
+        "anterolisthesis", "spondylolisthesis", "thoracolumbar",
+        "demineralisation", "facet hypertrophy",
+        "foraminal narrowing", "central canal stenosis",
+        "disc bulging", "disc protrusion",
+        # Sinonasal CT
+        "sinonasal", "polyps", "mucosal thickening",
+        # CT guidance procedures
+        "under CT guidance", "aseptic technique",
+        "Celestone", "informed consent",
     ],
     "MR": [
         "magnetic resonance", "T1-weighted", "T2-weighted", "FLAIR",
@@ -45,14 +90,19 @@ MODALITY_TERMS: dict[str, list[str]] = {
         "rotator cuff", "labral tear", "bone marrow oedema",
         "chondromalacia", "synovitis", "tendinopathy",
         "signal abnormality", "enhancement pattern",
+        "foraminal narrowing", "central canal stenosis",
+        "facet hypertrophy", "disc bulging",
     ],
     "CR": [
-        "radiograph", "X-ray", "radiolucent", "radiopaque",
+        "radiograph", "X-ray", "x-rays", "radiolucent", "radiopaque",
         "cortical", "trabecular", "joint space", "osteophyte",
         "fracture", "dislocation", "subluxation", "alignment",
-        "cardiomediastinal silhouette", "costophrenic angle",
+        "cardiomediastinal silhouette", "cardiomediastinum",
+        "costophrenic angle",
         "lung fields", "hilar", "mediastinal", "trachea",
         "soft tissues", "prosthesis", "hardware",
+        "endplate", "degeneration", "scoliosis",
+        "no acute bony abnormality", "degenerative changes",
     ],
     "MG": [
         "mammography", "mammographic", "BI-RADS", "breast density",
