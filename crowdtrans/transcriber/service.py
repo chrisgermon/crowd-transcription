@@ -334,6 +334,7 @@ def _store_result(session, site: SiteConfig, txn: Transcription, result):
         modality_code=txn.modality_code,
         procedure_description=txn.procedure_description,
         clinical_history=txn.complaint,
+        doctor_id=txn.doctor_id,
     )
     txn.confidence = result.confidence
     txn.deepgram_request_id = result.request_id

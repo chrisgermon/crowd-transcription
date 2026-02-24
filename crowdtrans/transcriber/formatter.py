@@ -20,8 +20,11 @@ Handles:
 """
 
 import json
+import logging
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Standard section headings per modality (from 15,000+ Visage report analysis)
@@ -33,6 +36,62 @@ from pathlib import Path
 # US: 74.2% CLINICAL HISTORY > FINDINGS > CONCLUSION
 #     ~14%  CLINICAL HISTORY > FINDINGS
 # BMD: 94.5% CLINICAL HISTORY > FINDINGS > CONCLUSION
+
+# ---------------------------------------------------------------------------
+# Doctor profiles (learned from retrospective analysis of Visage reports)
+# ---------------------------------------------------------------------------
+
+_DOCTOR_PROFILES: dict | None = None
+_PROFILES_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "doctor_profiles.json"
+# Fallback for deployed location
+_PROFILES_PATH_ALT = Path("/opt/crowdtrans/data/doctor_profiles.json")
+
+
+def _load_doctor_profiles() -> dict:
+    """Load doctor formatting profiles from JSON. Cached after first load."""
+    global _DOCTOR_PROFILES
+    if _DOCTOR_PROFILES is not None:
+        return _DOCTOR_PROFILES
+    for path in (_PROFILES_PATH, _PROFILES_PATH_ALT):
+        if path.exists():
+            try:
+                _DOCTOR_PROFILES = json.loads(path.read_text(encoding="utf-8"))
+                logger.info("Loaded doctor profiles from %s (%d doctors)", path, len(_DOCTOR_PROFILES))
+                return _DOCTOR_PROFILES
+            except Exception as e:
+                logger.warning("Failed to load doctor profiles from %s: %s", path, e)
+    _DOCTOR_PROFILES = {}
+    return _DOCTOR_PROFILES
+
+
+def _get_doctor_heading_map(doctor_id: str | None, modality_code: str | None) -> dict[str, str] | None:
+    """Get per-doctor heading renames (e.g. FINDINGS -> REPORT for Dr. Ng).
+
+    Returns a dict mapping canonical heading names to doctor-preferred names,
+    or None if no overrides are needed.
+    """
+    if not doctor_id:
+        return None
+    profiles = _load_doctor_profiles()
+    profile = profiles.get(str(doctor_id))
+    if not profile:
+        return None
+    modalities = profile.get("modalities", {})
+    mod_data = modalities.get(modality_code or "", {})
+    if not mod_data:
+        return None
+    # Check section structures to detect heading preferences
+    # Key is "section_structure" (singular) in the JSON
+    structures = mod_data.get("section_structure", mod_data.get("section_structures", {}))
+    heading_map = {}
+    # If majority of reports use "REPORT" instead of "FINDINGS", map it
+    total = sum(structures.values())
+    report_count = sum(v for k, v in structures.items() if "REPORT" in k and "FINDINGS" not in k)
+    findings_count = sum(v for k, v in structures.items() if "FINDINGS" in k)
+    if total > 0 and report_count > findings_count:
+        heading_map["FINDINGS"] = "REPORT"
+    return heading_map if heading_map else None
+
 
 _MODALITY_HEADINGS = {
     "CR": ["CLINICAL HISTORY", "FINDINGS", "CONCLUSION"],
@@ -138,6 +197,10 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r'\bglenium\b', re.IGNORECASE), 'glenohumeral'),
     (re.compile(r'\bbarotral\b', re.IGNORECASE), 'bilateral'),
     (re.compile(r'\bphony\b', re.IGNORECASE), 'bony'),
+    # New mishears from doctor style analysis (208 report pairs)
+    (re.compile(r'\bperjury\b(?=\s+(?:is|at|of|and|facet))', re.IGNORECASE), 'hypertrophy'),
+    (re.compile(r'\bactually\b(?=\s+(?:normal|symmetric|thickened|enlarged|seen))', re.IGNORECASE), 'bilaterally'),
+    (re.compile(r'\b(?<!\w)fusion\b(?=\s+(?:is|on|of|in|at|seen|noted))', re.IGNORECASE), 'effusion'),
 
     # Australian English spelling (from 15,000+ report analysis)
     # -emia -> -aemia (2114x in reports)
@@ -181,6 +244,9 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r'\blocalized\b', re.IGNORECASE), 'localised'),
     (re.compile(r'\brecognized\b', re.IGNORECASE), 'recognised'),
     (re.compile(r'\borganized\b', re.IGNORECASE), 'organised'),
+    # gray -> grey (AU English)
+    (re.compile(r'\bgray\b', re.IGNORECASE), 'grey'),
+    (re.compile(r'\bgray-matter\b', re.IGNORECASE), 'grey-matter'),
     # -or -> -our (35x tumour in reports)
     (re.compile(r'\btumor\b', re.IGNORECASE), 'tumour'),
     (re.compile(r'\btumors\b', re.IGNORECASE), 'tumours'),
@@ -212,6 +278,12 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r'(?<!\d\s)(?<!\d)\b(effusions)\b', re.IGNORECASE), 'effusion'),
     (re.compile(r'\bfree\s+fluids\b', re.IGNORECASE), 'free fluid'),
     (re.compile(r'(?<!\d\s)(?<!\d)\b(concerns)\b', re.IGNORECASE), 'concern'),
+    # Additional plural->singular from 208 report pair analysis
+    (re.compile(r'(?<!\d\s)(?<!\d)\blesions\b', re.IGNORECASE), 'lesion'),
+    (re.compile(r'(?<!\d\s)(?<!\d)\btears\b(?=\s|\.|\,|$)', re.IGNORECASE), 'tear'),
+    (re.compile(r'(?<!\d\s)(?<!\d)\bfragments\b', re.IGNORECASE), 'fragment'),
+    (re.compile(r'(?<!\d\s)(?<!\d)\bribs\b', re.IGNORECASE), 'rib'),
+    (re.compile(r'\bpleural\s+fluids\b', re.IGNORECASE), 'pleural fluid'),
 
     # Spoken "comma" that Deepgram didn't convert (11x in extra words)
     (re.compile(r'\bcomma\b', re.IGNORECASE), ','),
@@ -325,10 +397,10 @@ _SPOKEN_SECTION_MARKERS = [
 
 # Keywords strongly associated with CLINICAL HISTORY (from report analysis)
 _CLINICAL_HISTORY_KEYWORDS = {
-    "pain", "history", "chronic", "injury", "swelling", "trauma", "complaint",
+    "pain", "history", "chronic", "injury", "trauma", "complaint",
     "presenting", "referred", "referral", "symptoms", "worsening", "follow-up",
     "follow up", "known", "previous", "prior", "suspected", "query", "exclude",
-    "rule out", "assess", "assessment", "evaluation", "investigate",
+    "rule out", "assess", "assessment", "investigate",
     "oa", "fracture", "bursitis", "dating scan",
 }
 
@@ -343,7 +415,7 @@ _PROCEDURE_KEYWORDS = {
 
 # Keywords strongly associated with FINDINGS section
 _FINDINGS_KEYWORDS = {
-    "there", "normal", "seen", "focal", "echotexture", "architecture",
+    "there", "normal", "seen", "focal", "soft tissue", "echotexture", "architecture",
     "contour", "smooth", "unremarkable", "bilateral", "measures",
     "dimensions", "demonstrates", "shows", "reveals", "noted",
     "identified", "visualised", "visualized", "appear", "appears",
@@ -790,13 +862,17 @@ def add_section_headings(
     modality_code: str | None = None,
     procedure_description: str | None = None,
     clinical_history: str | None = None,
+    doctor_id: str | None = None,
 ) -> str:
     """Add section headings using content-based classification.
 
     Uses keyword patterns learned from 15,000+ Visage radiology reports to
     classify each paragraph into the correct report section.
+    Applies per-doctor heading preferences when a doctor profile exists.
     """
     available_headings = _MODALITY_HEADINGS.get(modality_code or "", _DEFAULT_HEADINGS)
+    # Per-doctor heading renames (e.g. Dr. Ng uses "REPORT" instead of "FINDINGS")
+    heading_map = _get_doctor_heading_map(doctor_id, modality_code)
 
     lines = []
 
@@ -890,7 +966,9 @@ def add_section_headings(
                 # Don't repeat clinical history heading
                 pass
             else:
-                lines.append(section)
+                # Apply per-doctor heading renames
+                display_heading = heading_map.get(section, section) if heading_map else section
+                lines.append(display_heading)
                 lines.append("")
             current_section = section
 
@@ -924,8 +1002,13 @@ def format_transcript(
     modality_code: str | None = None,
     procedure_description: str | None = None,
     clinical_history: str | None = None,
+    doctor_id: str | None = None,
 ) -> str:
-    """Full formatting pipeline: spoken commands -> corrections -> sections -> headings."""
+    """Full formatting pipeline: spoken commands -> corrections -> sections -> headings.
+
+    When doctor_id is provided, applies per-doctor heading preferences
+    learned from retrospective analysis of Visage reports.
+    """
     text = apply_spoken_commands(text)
     text = apply_medical_corrections(text)
     # Convert inline section markers to paragraph breaks so the classifier
@@ -937,6 +1020,7 @@ def format_transcript(
         modality_code,
         procedure_description,
         clinical_history,
+        doctor_id,
     )
     # Final cleanup pass: capitalise after periods/newlines, fix spacing
     text = re.sub(r'(\.\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)

@@ -133,6 +133,7 @@ def reformat():
                 modality_code=txn.modality_code,
                 procedure_description=txn.procedure_description,
                 clinical_history=txn.complaint,
+                doctor_id=txn.doctor_id,
             )
             if i % 50 == 0:
                 session.commit()
