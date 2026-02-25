@@ -14,6 +14,9 @@ engine = create_engine(
     settings.sqlite_url,
     connect_args={"check_same_thread": False},
     echo=False,
+    pool_size=5,
+    pool_recycle=300,
+    pool_pre_ping=True,
 )
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
@@ -24,7 +27,8 @@ def _set_sqlite_pragma(dbapi_conn, connection_record):
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA mmap_size=0")
     cursor.close()
 
 

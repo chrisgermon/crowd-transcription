@@ -1,17 +1,24 @@
 """Compare CrowdScription transcriptions against Visage final reports."""
 
+import logging
 import re
+import time
 from difflib import SequenceMatcher
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
 from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy.exc import OperationalError
+
+from sqlalchemy.orm import defer
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
 from crowdtrans.models import Transcription
 from crowdtrans.web.app import templates
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/compare")
 
@@ -183,9 +190,27 @@ def compare_list(
     page: int = Query(1, ge=1),
 ):
     """List transcriptions with their matching Visage reports and similarity scores."""
+    for attempt in range(3):
+        try:
+            return _compare_list_impl(request, modality, doctor, sort, page)
+        except OperationalError as e:
+            logger.warning("SQLite error on compare list (attempt %d): %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(1)
+            else:
+                raise HTTPException(status_code=503, detail="Database temporarily unavailable, please retry")
+
+
+def _compare_list_impl(request, modality, doctor, sort, page):
     with SessionLocal() as session:
+        # Defer large blob columns to avoid loading hundreds of MB
         query = (
             session.query(Transcription)
+            .options(
+                defer(Transcription.words_json),
+                defer(Transcription.paragraphs_json),
+                defer(Transcription.transcript_text),
+            )
             .filter(
                 Transcription.status == "complete",
                 Transcription.formatted_text.isnot(None),
@@ -267,8 +292,28 @@ def compare_list(
 @router.get("/{transcription_id}")
 def compare_detail(request: Request, transcription_id: int):
     """Side-by-side diff of a single transcription vs Visage report."""
+    for attempt in range(3):
+        try:
+            return _compare_detail_impl(request, transcription_id)
+        except OperationalError as e:
+            logger.warning("SQLite error on compare detail (attempt %d): %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(1)
+            else:
+                raise HTTPException(status_code=503, detail="Database temporarily unavailable, please retry")
+
+
+def _compare_detail_impl(request, transcription_id):
     with SessionLocal() as session:
-        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        txn = (
+            session.query(Transcription)
+            .options(
+                defer(Transcription.words_json),
+                defer(Transcription.paragraphs_json),
+            )
+            .filter_by(id=transcription_id)
+            .first()
+        )
         if not txn:
             raise HTTPException(status_code=404, detail="Transcription not found")
 
