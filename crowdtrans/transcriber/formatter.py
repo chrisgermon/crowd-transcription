@@ -1,7 +1,7 @@
 """Post-process Deepgram transcripts for radiology report formatting.
 
 Patterns learned from analysis of 15,000+ Visage clinical_document reports
-and comparison of 177+ transcript-report pairs.
+and comparison of 3,247 transcript-report pairs.
 
 Handles:
 - Australian English dictation commands ("stop" -> ".", "full stop" -> ".")
@@ -190,7 +190,7 @@ _MODALITY_HEADINGS = {
 _DEFAULT_HEADINGS = ["CLINICAL HISTORY", "FINDINGS", "CONCLUSION"]
 
 # ---------------------------------------------------------------------------
-# Medical term corrections (learned from 177+ transcript-report comparisons)
+# Medical term corrections (learned from 3,247 transcript-report comparisons)
 # ---------------------------------------------------------------------------
 
 _MEDICAL_CORRECTIONS = [
@@ -238,6 +238,12 @@ _MEDICAL_CORRECTIONS = [
 
     # Multi-word mishears (2x+ in comparisons)
     (re.compile(r'\bnear fusion\b', re.IGNORECASE), 'knee effusion'),
+    # "small/moderate/large/no/joint/pleural fusion" -> effusion (from 3,247-pair analysis)
+    (re.compile(r'\b(small|moderate|large|mild|minimal|trace)\s+fusion\b', re.IGNORECASE),
+     lambda m: m.group(1) + ' effusion'),
+    (re.compile(r'\b(joint|knee|pleural|pericardial|hip|shoulder|ankle|elbow|glenohumeral)\s+fusion\b', re.IGNORECASE),
+     lambda m: m.group(1) + ' effusion'),
+    (re.compile(r'\bno\s+fusion\b(?=\s+(?:is|on|seen|noted|identified))', re.IGNORECASE), 'no effusion'),
     (re.compile(r'\bsun and nasal\b', re.IGNORECASE), 'sinonasal'),
     (re.compile(r'\bbunch of bone\b', re.IGNORECASE), 'bunching on'),
     (re.compile(r'\bin plate\b', re.IGNORECASE), 'endplate'),
@@ -284,6 +290,25 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r'\bperjury\b(?=\s+(?:is|at|of|and|facet))', re.IGNORECASE), 'hypertrophy'),
     (re.compile(r'\bactually\b(?=\s+(?:normal|symmetric|thickened|enlarged|seen))', re.IGNORECASE), 'bilaterally'),
     (re.compile(r'\b(?<!\w)fusion\b(?=\s+(?:is|on|of|in|at|seen|noted))', re.IGNORECASE), 'effusion'),
+    # "inclusion" -> "conclusion" (175x in transcripts, 0x in reports)
+    # Deepgram hears "conclusion" as "inclusion" — match as standalone or "in inclusion"
+    (re.compile(r'\bin\s+inclusion\b', re.IGNORECASE), 'in conclusion'),
+    (re.compile(r'\binclusion\b(?=\s*[,.:;]|\s+(?:is|are|was|being))', re.IGNORECASE), 'conclusion'),
+    # "angular" -> "annular" (30x) in spine/disc context
+    (re.compile(r'\bangular\b(?=\s+(?:tear|fissure|bulge|disc|protrusion|rupture))', re.IGNORECASE), 'annular'),
+    # "foramen" -> "foraminal" (13x) when used as adjective before stenosis/narrowing
+    (re.compile(r'\bforamen\b(?=\s+(?:stenosis|narrowing|encroachment|compromise))', re.IGNORECASE), 'foraminal'),
+    # "basilar" -> "vertebrobasilar" (13x) in specific vascular context
+    (re.compile(r'\bbasilar\b(?=\s+(?:insufficiency|circulation))', re.IGNORECASE), 'vertebrobasilar'),
+    # "bugling" -> "bulging" (129x — Deepgram mishear, never correct in radiology)
+    (re.compile(r'\bbugling\b', re.IGNORECASE), 'bulging'),
+    # "fracturing" -> "fracture" (444x — reports use noun form, not gerund)
+    (re.compile(r'\bfracturing\b', re.IGNORECASE), 'fracture'),
+    # "impingements" -> "impingement" (153x — singular preferred)
+    (re.compile(r'(?<!\d\s)(?<!\d)\bimpingements\b', re.IGNORECASE), 'impingement'),
+    # "mils" -> measurement unit (context-dependent: injection = ml, dimension = mm)
+    (re.compile(r'\b(\d+)\s*mils?\b(?=\s+(?:of\s+)?(?:celestone|lignocaine|lidocaine|cortisone|marcaine|xylocaine|saline|contrast|local))', re.IGNORECASE), r'\1ml'),
+    (re.compile(r'\b(\d+)\s*mils?\b', re.IGNORECASE), r'\1mm'),
 
     # Australian English spelling (from 15,000+ report analysis)
     # -emia -> -aemia (2114x in reports)
@@ -336,6 +361,26 @@ _MEDICAL_CORRECTIONS = [
     # -er -> -re
     (re.compile(r'\bfiber\b', re.IGNORECASE), 'fibre'),
     (re.compile(r'\bfibers\b', re.IGNORECASE), 'fibres'),
+    # fecal -> faecal (22x in 3,247-pair analysis)
+    (re.compile(r'\bfecal\b', re.IGNORECASE), 'faecal'),
+    # hematoma -> haematoma (22x)
+    (re.compile(r'\bhematoma\b', re.IGNORECASE), 'haematoma'),
+    (re.compile(r'\bhematomas\b', re.IGNORECASE), 'haematomas'),
+    # osteopenia -> osteopaenia (11x)
+    (re.compile(r'\bosteopenia\b', re.IGNORECASE), 'osteopaenia'),
+    (re.compile(r'\bosteopenic\b', re.IGNORECASE), 'osteopaenic'),
+    # lidocaine -> lignocaine (12x, AU drug name)
+    (re.compile(r'\blidocaine\b', re.IGNORECASE), 'lignocaine'),
+
+    # Hyphenation corrections (from 3,247-pair analysis)
+    # nonspecific -> non-specific (27x)
+    (re.compile(r'\bnonspecific\b', re.IGNORECASE), 'non-specific'),
+    # nontender -> non-tender (26x)
+    (re.compile(r'\bnontender\b', re.IGNORECASE), 'non-tender'),
+    # intraarticular -> intra-articular (10x)
+    (re.compile(r'\bintraarticular\b', re.IGNORECASE), 'intra-articular'),
+    # periarticular -> peri-articular (AU preference)
+    (re.compile(r'\bperiarticular\b', re.IGNORECASE), 'peri-articular'),
 
     # Contraction expansion (7x+ in comparisons)
     (re.compile(r"\bdon\s*'?\s*t\b", re.IGNORECASE), 'do not'),
@@ -348,12 +393,12 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r"\bdoesn\s*'?\s*t\b", re.IGNORECASE), 'does not'),
     (re.compile(r"\bdidn\s*'?\s*t\b", re.IGNORECASE), 'did not'),
     (re.compile(r"\bthere\s*'?\s*s\b", re.IGNORECASE), 'there is'),
-    (re.compile(r"\bit\s*'?\s*s\b", re.IGNORECASE), 'it is'),
+    (re.compile(r"\bit\s*'\s*s\b", re.IGNORECASE), 'it is'),
     (re.compile(r"\bhe\s*'?\s*s\b", re.IGNORECASE), 'he is'),
     (re.compile(r"\bshe\s*'?\s*s\b", re.IGNORECASE), 'she is'),
-    (re.compile(r"\bwe\s*'?\s*re\b", re.IGNORECASE), 'we are'),
+    (re.compile(r"\bwe\s*'\s*re\b", re.IGNORECASE), 'we are'),
     (re.compile(r"\byou\s*'?\s*re\b", re.IGNORECASE), 'you are'),
-    (re.compile(r"\bi\s*'?\s*m\b", re.IGNORECASE), 'I am'),
+    (re.compile(r"\bi\s*'\s*m\b", re.IGNORECASE), 'I am'),
 
     # Plural-to-singular normalization (Visage reports strongly prefer singular)
     # Only applied when NOT preceded by a number/quantifier to preserve "three fractures" etc.
@@ -447,6 +492,12 @@ _FILLER_PATTERNS = [
 
     # "Send it through for signing" -- end-of-dictation command
     (re.compile(r'\.?\s*[Ss]end\s+it\s+through\s+for\s+signing\.?\s*', re.IGNORECASE), '.'),
+
+    # "Template" -- dictation system command artifact (128x in transcripts, 0x in reports)
+    # The radiologist says "template" to trigger a template in their dictation system
+    (re.compile(r'\.\s*[Tt]emplate\.?\s*', re.IGNORECASE), '. '),
+    (re.compile(r'^\s*[Tt]emplate\.?\s*', re.IGNORECASE | re.MULTILINE), ''),
+    (re.compile(r',?\s*template\b\.?\s*', re.IGNORECASE), '. '),
 ]
 
 # ---------------------------------------------------------------------------

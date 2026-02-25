@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Learning — CrowdScription{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">Learning Agent</h1>
+        <button id="run-btn" onclick="triggerLearning()"
+                class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition">
+            Run Learning Now
+        </button>
+    </div>
+
+    <!-- Stats -->
+    {% if stats %}
+    <div class="grid grid-cols-4 gap-4">
+        <div class="bg-white p-4 rounded-lg shadow-sm border">
+            <div class="text-sm text-gray-500">Pairs Analyzed</div>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:,}".format(stats.get('pairs', 0)) }}</div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow-sm border">
+            <div class="text-sm text-gray-500">Avg Similarity</div>
+            <div class="text-2xl font-bold text-gray-900">{{ "%.1f"|format(stats.get('avg_similarity', 0)) }}%</div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow-sm border">
+            <div class="text-sm text-gray-500">Doctor Profiles</div>
+            <div class="text-2xl font-bold text-gray-900">{{ stats.get('doctors', 0) }}</div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow-sm border">
+            <div class="text-sm text-gray-500">Correction Candidates</div>
+            <div class="text-2xl font-bold text-gray-900">{{ stats.get('correction_candidates', 0) }}</div>
+        </div>
+    </div>
+    {% else %}
+    <div class="bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded-lg text-sm">
+        No learning results yet. Click "Run Learning Now" to analyze transcript-report pairs.
+    </div>
+    {% endif %}
+
+    <!-- Doctor Profiles -->
+    <div class="bg-white rounded-lg shadow-sm border">
+        <div class="px-4 py-3 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Doctor Profiles</h2>
+            <p class="text-sm text-gray-500">Per-doctor formatting rules learned from Visage report comparison</p>
+        </div>
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Doctor</th>
+                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Modalities</th>
+                    <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reports</th>
+                    <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Avg Similarity</th>
+                    <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Corrections</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                {% for p in profile_summaries %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-2">
+                        <a href="/learning/profile/{{ p.doctor_id }}" class="text-indigo-600 hover:underline font-medium">
+                            Dr {{ p.name }}
+                        </a>
+                    </td>
+                    <td class="px-4 py-2 text-sm text-gray-600">{{ p.modalities | join(', ') }}</td>
+                    <td class="px-4 py-2 text-right text-sm">{{ "{:,}".format(p.total_count) }}</td>
+                    <td class="px-4 py-2 text-right text-sm">
+                        <span class="{% if p.avg_similarity >= 80 %}text-green-600{% elif p.avg_similarity >= 60 %}text-yellow-600{% else %}text-red-600{% endif %}">
+                            {{ "%.1f"|format(p.avg_similarity) }}%
+                        </span>
+                    </td>
+                    <td class="px-4 py-2 text-right text-sm">{{ p.corrections_count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Global Correction Candidates -->
+    {% if global_corrections %}
+    <div class="bg-white rounded-lg shadow-sm border">
+        <div class="px-4 py-3 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Correction Candidates</h2>
+            <p class="text-sm text-gray-500">Word replacements found across all transcript-report pairs (not yet in formatter)</p>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Transcript Word</th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Report Word</th>
+                        <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Count</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                    {% for c in global_corrections %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-4 py-2 text-sm font-mono text-red-700">{{ c.transcript }}</td>
+                        <td class="px-4 py-2 text-sm font-mono text-green-700">{{ c.report }}</td>
+                        <td class="px-4 py-2 text-right text-sm text-gray-600">{{ c.count }}x</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Transcript-only / Report-only Words -->
+    <div class="grid grid-cols-2 gap-6">
+        {% if transcript_only %}
+        <div class="bg-white rounded-lg shadow-sm border">
+            <div class="px-4 py-3 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Transcript-Only Words</h2>
+                <p class="text-sm text-gray-500">Frequent in transcripts, absent in reports (fillers, mishears, artifacts)</p>
+            </div>
+            <div class="p-4 space-y-1">
+                {% for w in transcript_only %}
+                <div class="flex justify-between text-sm">
+                    <span class="font-mono text-red-700">{{ w.word }}</span>
+                    <span class="text-gray-500">{{ w.transcript_count }}x / {{ w.report_count }}x</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if report_only %}
+        <div class="bg-white rounded-lg shadow-sm border">
+            <div class="px-4 py-3 border-b">
+                <h2 class="text-lg font-semibold text-gray-900">Report-Only Words</h2>
+                <p class="text-sm text-gray-500">Frequent in reports, absent in transcripts (Deepgram misses these)</p>
+            </div>
+            <div class="p-4 space-y-1">
+                {% for w in report_only %}
+                <div class="flex justify-between text-sm">
+                    <span class="font-mono text-green-700">{{ w.word }}</span>
+                    <span class="text-gray-500">{{ w.report_count }}x / {{ w.transcript_count }}x</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function triggerLearning() {
+    const btn = document.getElementById('run-btn');
+    btn.disabled = true;
+    btn.textContent = 'Running...';
+    btn.classList.add('opacity-50');
+    fetch('/learning/run', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            btn.textContent = 'Started — refresh in a few minutes';
+        })
+        .catch(err => {
+            btn.textContent = 'Error — try again';
+            btn.disabled = false;
+            btn.classList.remove('opacity-50');
+        });
+}
+</script>
+{% endblock %}
