@@ -87,7 +87,7 @@
         </div>
         <div>
             <div class="text-lg font-bold text-green-600">{{ diff_stats.insert }}</div>
-            <div class="text-xs text-gray-500">missing (in Visage)</div>
+            <div class="text-xs text-gray-500">missing (in {{ ris_name() }})</div>
         </div>
     </div>
 </div>
@@ -113,7 +113,7 @@
         <span><span class="legend-swatch" style="background: #fee2e2;"></span>Extra in ours (remove)</span>
         <span><span class="legend-swatch" style="background: #dcfce7;"></span>Missing from ours (add)</span>
         <span><span class="legend-swatch" style="background: #fef3c7;"></span>Our version (wrong)</span>
-        <span><span class="legend-swatch" style="background: #dbeafe;"></span>Visage version (correct)</span>
+        <span><span class="legend-swatch" style="background: #dbeafe;"></span>{{ ris_name() }} version (correct)</span>
     </div>
 </div>
 
@@ -121,7 +121,7 @@
 <div id="view-unified" class="bg-white rounded-lg shadow">
     <div class="px-5 py-4 border-b border-gray-200">
         <h2 class="text-lg font-semibold text-gray-900">Unified Diff</h2>
-        <p class="text-xs text-gray-500">Shows how our transcription should be changed to match the Visage report</p>
+        <p class="text-xs text-gray-500">Shows how our transcription should be changed to match the {{ ris_name() }} report</p>
     </div>
     <div class="p-5 diff-view whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">
         {%- for seg in diff_segments -%}
@@ -130,10 +130,10 @@
             {%- elif seg.type == 'delete' -%}
                 <span class="diff-delete" title="Extra in our transcript">{{ seg.our }}</span>{{ " " }}
             {%- elif seg.type == 'insert' -%}
-                <span class="diff-insert" title="Missing from our transcript (in Visage report)">{{ seg.visage }}</span>{{ " " }}
+                <span class="diff-insert" title="Missing from our transcript (in {{ ris_name() }} report)">{{ seg.visage }}</span>{{ " " }}
             {%- elif seg.type == 'replace' -%}
                 <span class="diff-replace-ours" title="Our version">{{ seg.our }}</span>
-                <span class="diff-replace-visage" title="Visage version">{{ seg.visage }}</span>{{ " " }}
+                <span class="diff-replace-visage" title="{{ ris_name() }} version">{{ seg.visage }}</span>{{ " " }}
             {%- endif -%}
         {%- endfor -%}
     </div>
@@ -162,7 +162,7 @@
             </div>
         </div>
         <div class="p-5">
-            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Visage Report (Transcriptionist)</div>
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">{{ ris_name() }} Report (Transcriptionist)</div>
             <div class="diff-view whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">
                 {%- for seg in diff_segments -%}
                     {%- if seg.type == 'equal' -%}
@@ -196,7 +196,7 @@
         </div>
         <div class="bg-white rounded-lg shadow">
             <div class="px-5 py-4 border-b border-gray-200">
-                <h2 class="text-lg font-semibold text-gray-900">Visage Report (Normalised)</h2>
+                <h2 class="text-lg font-semibold text-gray-900">{{ ris_name() }} Report (Normalised)</h2>
             </div>
             <div class="p-5 whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">{{ visage_normalised or '(empty)' }}</div>
         </div>
@@ -210,7 +210,7 @@
         </div>
         <div class="bg-white rounded-lg shadow">
             <div class="px-5 py-4 border-b border-gray-200">
-                <h2 class="text-lg font-semibold text-gray-900">Visage Report (Full)</h2>
+                <h2 class="text-lg font-semibold text-gray-900">{{ ris_name() }} Report (Full)</h2>
             </div>
             <div class="p-5 whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">{{ visage_text or '(empty)' }}</div>
         </div>

@@ -28,6 +28,7 @@ def settings_page(request: Request):
 @router.post("/global")
 def save_global(
     request: Request,
+    ris_type: str = Form("visage"),
     deepgram_api_key: str = Form(""),
     deepgram_model: str = Form("nova-3-medical"),
     deepgram_language: str = Form("en-AU"),
@@ -36,6 +37,7 @@ def save_global(
 ):
     store = get_config_store()
     store.save_globals({
+        "ris_type": ris_type,
         "deepgram_api_key": deepgram_api_key,
         "deepgram_model": deepgram_model,
         "deepgram_language": deepgram_language,

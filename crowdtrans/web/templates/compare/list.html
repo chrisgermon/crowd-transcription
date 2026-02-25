@@ -5,7 +5,7 @@
 <div class="flex items-center justify-between mb-6">
     <div>
         <h1 class="text-2xl font-bold text-gray-900">Report Comparison</h1>
-        <p class="text-sm text-gray-500 mt-1">CrowdScription (Deepgram) vs Visage (Transcriptionist)</p>
+        <p class="text-sm text-gray-500 mt-1">CrowdScription (Deepgram) vs {{ ris_name() }} (Transcriptionist)</p>
     </div>
     <div class="flex items-center space-x-4">
         <div class="text-right">
@@ -76,7 +76,7 @@
                             <div class="text-xs text-gray-600 line-clamp-2 whitespace-pre-wrap">{{ item.our_preview }}</div>
                         </div>
                         <div>
-                            <div class="text-xs font-medium text-gray-500 uppercase mb-1">Visage Report</div>
+                            <div class="text-xs font-medium text-gray-500 uppercase mb-1">{{ ris_name() }} Report</div>
                             <div class="text-xs text-gray-600 line-clamp-2 whitespace-pre-wrap">{{ item.visage_preview }}</div>
                         </div>
                     </div>
@@ -96,7 +96,7 @@
     </a>
     {% else %}
     <div class="bg-white rounded-lg shadow p-8 text-center text-gray-400">
-        No matched report pairs found. Transcriptions must be complete and have a matching FINAL report in Visage.
+        No matched report pairs found. Transcriptions must be complete and have a matching FINAL report in {{ ris_name() }}.
     </div>
     {% endfor %}
 </div>

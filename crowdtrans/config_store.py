@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Keys stored in global_settings, with their .env fallback attribute names
 _GLOBAL_KEYS = {
+    "ris_type": "ris_type",
     "deepgram_api_key": "deepgram_api_key",
     "deepgram_model": "deepgram_model",
     "deepgram_language": "deepgram_language",
