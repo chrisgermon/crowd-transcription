@@ -64,12 +64,8 @@ def _load_doctor_profiles() -> dict:
     return _DOCTOR_PROFILES
 
 
-def _get_doctor_heading_map(doctor_id: str | None, modality_code: str | None) -> dict[str, str] | None:
-    """Get per-doctor heading renames (e.g. FINDINGS -> REPORT for Dr. Ng).
-
-    Returns a dict mapping canonical heading names to doctor-preferred names,
-    or None if no overrides are needed.
-    """
+def _get_doctor_mod_data(doctor_id: str | None, modality_code: str | None) -> dict | None:
+    """Get the modality-specific profile data for a doctor. Returns None if unavailable."""
     if not doctor_id:
         return None
     profiles = _load_doctor_profiles()
@@ -77,20 +73,107 @@ def _get_doctor_heading_map(doctor_id: str | None, modality_code: str | None) ->
     if not profile:
         return None
     modalities = profile.get("modalities", {})
-    mod_data = modalities.get(modality_code or "", {})
+    return modalities.get(modality_code or "", None)
+
+
+def _get_doctor_heading_map(doctor_id: str | None, modality_code: str | None) -> dict[str, str] | None:
+    """Get per-doctor heading renames (e.g. FINDINGS -> REPORT for Dr. Ng).
+
+    Returns a dict mapping canonical heading names to doctor-preferred names,
+    or None if no overrides are needed.
+    """
+    mod_data = _get_doctor_mod_data(doctor_id, modality_code)
     if not mod_data:
         return None
-    # Check section structures to detect heading preferences
-    # Key is "section_structure" (singular) in the JSON
     structures = mod_data.get("section_structure", mod_data.get("section_structures", {}))
     heading_map = {}
-    # If majority of reports use "REPORT" instead of "FINDINGS", map it
     total = sum(structures.values())
     report_count = sum(v for k, v in structures.items() if "REPORT" in k and "FINDINGS" not in k)
     findings_count = sum(v for k, v in structures.items() if "FINDINGS" in k)
     if total > 0 and report_count > findings_count:
         heading_map["FINDINGS"] = "REPORT"
     return heading_map if heading_map else None
+
+
+def _get_doctor_headings(doctor_id: str | None, modality_code: str | None) -> list[str] | None:
+    """Get the doctor's preferred section heading list for a modality.
+
+    Derived from the most common section_structure pattern in their profile.
+    Returns None to fall back to global modality defaults.
+    """
+    mod_data = _get_doctor_mod_data(doctor_id, modality_code)
+    if not mod_data or mod_data.get("count", 0) < 5:
+        return None  # Not enough data
+    structures = mod_data.get("section_structure", mod_data.get("section_structures", {}))
+    if not structures:
+        return None
+    # Find the most common structure
+    best_seq = max(structures, key=structures.get)
+    # Parse "CLINICAL HISTORY > FINDINGS > CONCLUSION" into list
+    headings = [h.strip() for h in best_seq.split(">")]
+    # Deduplicate (some structures have "CONCLUSION > CONCLUSION")
+    seen = set()
+    unique = []
+    for h in headings:
+        if h not in seen:
+            seen.add(h)
+            unique.append(h)
+    return unique
+
+
+def _doctor_uses_conclusion(doctor_id: str | None, modality_code: str | None) -> bool | None:
+    """Check if this doctor typically includes a CONCLUSION section.
+
+    Returns True/False based on their section_presence_pct, or None if unknown.
+    Uses 30% threshold: below 30% means the doctor rarely uses CONCLUSION.
+    """
+    mod_data = _get_doctor_mod_data(doctor_id, modality_code)
+    if not mod_data or mod_data.get("count", 0) < 5:
+        return None
+    presence = mod_data.get("section_presence_pct", {})
+    conclusion_pct = presence.get("CONCLUSION", None)
+    if conclusion_pct is None:
+        return None
+    return conclusion_pct >= 30.0
+
+
+# Word corrections that are noise (common function words, not real corrections)
+_CORRECTION_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "in", "at", "of", "for",
+    "to", "and", "or", "on", "with", "as", "by", "it", "this", "that",
+}
+
+
+def _get_doctor_word_corrections(doctor_id: str | None, modality_code: str | None) -> list[tuple[re.Pattern, str]]:
+    """Get doctor-specific word corrections from their profile.
+
+    Only returns high-confidence corrections (2+ occurrences) that aren't
+    already handled by global corrections or are common function words.
+    """
+    mod_data = _get_doctor_mod_data(doctor_id, modality_code)
+    if not mod_data:
+        return []
+    corrections = mod_data.get("word_corrections", [])
+    result = []
+    for item in corrections:
+        if len(item) < 3:
+            continue
+        wrong, right, count = item[0], item[1], item[2]
+        if count < 2:
+            continue
+        # Skip function word noise
+        if wrong.lower() in _CORRECTION_STOPWORDS or right.lower() in _CORRECTION_STOPWORDS:
+            continue
+        # Skip if wrong == right (case-only differences)
+        if wrong.lower() == right.lower():
+            continue
+        # Skip single-character corrections
+        if len(wrong) <= 1 or len(right) <= 1:
+            continue
+        # Build a word-boundary regex
+        pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
+        result.append((pattern, right))
+    return result
 
 
 _MODALITY_HEADINGS = {
@@ -870,7 +953,11 @@ def add_section_headings(
     classify each paragraph into the correct report section.
     Applies per-doctor heading preferences when a doctor profile exists.
     """
-    available_headings = _MODALITY_HEADINGS.get(modality_code or "", _DEFAULT_HEADINGS)
+    # Use doctor-specific headings if available, otherwise global modality defaults
+    available_headings = (
+        _get_doctor_headings(doctor_id, modality_code)
+        or _MODALITY_HEADINGS.get(modality_code or "", _DEFAULT_HEADINGS)
+    )
     # Per-doctor heading renames (e.g. Dr. Ng uses "REPORT" instead of "FINDINGS")
     heading_map = _get_doctor_heading_map(doctor_id, modality_code)
 
@@ -937,11 +1024,20 @@ def add_section_headings(
         s == "CLINICAL HISTORY" for s, _ in classified
     )
 
-    # For CR (X-ray), only include CONCLUSION if content is classified as such
-    # (91.8% of CR reports have no conclusion section)
-    cr_has_conclusion = modality_code != "CR" or any(
-        s == "CONCLUSION" for s, _ in classified
-    )
+    # Determine whether to include CONCLUSION section.
+    # Check doctor profile first; fall back to modality-level heuristic (CR rarely uses it).
+    doctor_conclusion = _doctor_uses_conclusion(doctor_id, modality_code)
+    if doctor_conclusion is False:
+        # Doctor rarely uses CONCLUSION for this modality — only include if
+        # the classifier explicitly detected conclusion content
+        include_conclusion = any(s == "CONCLUSION" for s, _ in classified)
+    elif doctor_conclusion is True:
+        include_conclusion = True
+    else:
+        # No doctor profile — use legacy CR heuristic
+        include_conclusion = modality_code != "CR" or any(
+            s == "CONCLUSION" for s, _ in classified
+        )
 
     # Build output with headings, only inserting a heading when the section changes
     current_section = None
@@ -957,8 +1053,8 @@ def add_section_headings(
             elif section == "CLINICAL HISTORY" and not has_clinical_history:
                 section = "FINDINGS"
 
-        # For CR, reclassify weak CONCLUSION as FINDINGS
-        if section == "CONCLUSION" and not cr_has_conclusion:
+        # Suppress CONCLUSION if doctor/modality doesn't use it
+        if section == "CONCLUSION" and not include_conclusion:
             section = "FINDINGS"
 
         if section != current_section:
@@ -1006,11 +1102,19 @@ def format_transcript(
 ) -> str:
     """Full formatting pipeline: spoken commands -> corrections -> sections -> headings.
 
-    When doctor_id is provided, applies per-doctor heading preferences
-    learned from retrospective analysis of Visage reports.
+    When doctor_id is provided, applies per-doctor formatting preferences
+    learned from retrospective analysis of Visage reports:
+    - Doctor-specific word corrections (e.g. architecture -> echotexture)
+    - Per-doctor section heading sequences
+    - CONCLUSION inclusion/suppression based on doctor's usage patterns
+    - Heading renames (e.g. FINDINGS -> REPORT for some doctors)
     """
     text = apply_spoken_commands(text)
     text = apply_medical_corrections(text)
+    # Apply doctor-specific word corrections from profile
+    doctor_corrections = _get_doctor_word_corrections(doctor_id, modality_code)
+    for pattern, replacement in doctor_corrections:
+        text = pattern.sub(replacement, text)
     # Convert inline section markers to paragraph breaks so the classifier
     # can detect section transitions that occur mid-sentence
     for pattern, replacement in _INLINE_SECTION_BREAKS:

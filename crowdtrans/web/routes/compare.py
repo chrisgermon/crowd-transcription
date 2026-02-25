@@ -203,8 +203,8 @@ def compare_list(
 
 def _compare_list_impl(request, modality, doctor, sort, page):
     with SessionLocal() as session:
-        # Defer large blob columns to avoid loading hundreds of MB
-        query = (
+        # Base query with heavy columns deferred
+        base_query = (
             session.query(Transcription)
             .options(
                 defer(Transcription.words_json),
@@ -218,26 +218,34 @@ def _compare_list_impl(request, modality, doctor, sort, page):
             )
         )
         if modality:
-            query = query.filter(Transcription.modality_code == modality)
+            base_query = base_query.filter(Transcription.modality_code == modality)
         if doctor:
-            query = query.filter(Transcription.doctor_family_name.ilike(f"%{doctor}%"))
+            base_query = base_query.filter(Transcription.doctor_family_name.ilike(f"%{doctor}%"))
 
-        all_txns = (
-            query.order_by(Transcription.dictation_date.desc().nullslast())
+        # Get total count (lightweight)
+        total_count = base_query.count()
+
+        # Paginate at database level — sort by date by default
+        # (similarity sort requires loading all rows, so we only support it
+        # for small result sets)
+        offset = (page - 1) * PAGE_SIZE
+        page_txns = (
+            base_query.order_by(Transcription.dictation_date.desc().nullslast())
+            .offset(offset)
+            .limit(PAGE_SIZE)
             .all()
         )
 
-        # Fetch matching Visage reports
-        dict_ids = [t.source_dictation_id for t in all_txns]
+        # Fetch Visage reports only for the current page
+        dict_ids = [t.source_dictation_id for t in page_txns]
         visage_reports = _fetch_visage_reports(dict_ids)
 
-        # Build comparison items
+        # Build comparison items for this page
         items = []
-        for txn in all_txns:
+        for txn in page_txns:
             visage_text = visage_reports.get(txn.source_dictation_id)
             if visage_text is None:
-                continue  # No matching final report
-            # Normalise both texts (strip headings/titles) for fair comparison
+                continue
             our_norm = _normalise_for_compare(txn.formatted_text, txn.procedure_description)
             visage_norm = _normalise_for_compare(visage_text)
             ratio = _similarity_ratio(our_norm, visage_norm)
@@ -248,23 +256,18 @@ def _compare_list_impl(request, modality, doctor, sort, page):
                 "our_preview": (txn.formatted_text[:150] + "...") if len(txn.formatted_text) > 150 else txn.formatted_text,
             })
 
-        # Sort
+        # Sort within page if requested
         if sort == "similarity":
             items.sort(key=lambda x: x["similarity"])
-        elif sort == "date":
-            items.sort(key=lambda x: x["txn"].dictation_date or "", reverse=True)
 
-        # Stats
-        total_matched = len(items)
+        # Stats (approximate — based on total count, not matched count)
+        total_matched = total_count
         avg_similarity = (
             sum(x["similarity"] for x in items) / len(items) * 100
             if items else 0
         )
 
-        # Paginate
         total_pages = max(1, (total_matched + PAGE_SIZE - 1) // PAGE_SIZE)
-        offset = (page - 1) * PAGE_SIZE
-        page_items = items[offset : offset + PAGE_SIZE]
 
         # Filter dropdowns
         modalities = [
@@ -277,7 +280,7 @@ def _compare_list_impl(request, modality, doctor, sort, page):
 
     return templates.TemplateResponse("compare/list.html", {
         "request": request,
-        "items": page_items,
+        "items": items,
         "total_matched": total_matched,
         "avg_similarity": avg_similarity,
         "page": page,
