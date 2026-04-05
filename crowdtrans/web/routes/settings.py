@@ -34,18 +34,83 @@ def save_global(
     deepgram_language: str = Form("en-AU"),
     poll_interval_seconds: str = Form("30"),
     batch_size: str = Form("10"),
+    anthropic_api_key: str = Form(""),
+    llm_model: str = Form("claude-sonnet-4-20250514"),
+    llm_mode: str = Form("off"),
+    llm_ab_test_pct: str = Form("50"),
 ):
     store = get_config_store()
-    store.save_globals({
+    data = {
         "ris_type": ris_type,
         "deepgram_api_key": deepgram_api_key,
         "deepgram_model": deepgram_model,
         "deepgram_language": deepgram_language,
         "poll_interval_seconds": poll_interval_seconds,
         "batch_size": batch_size,
-    })
-    logger.info("Global settings updated")
+        "anthropic_api_key": anthropic_api_key,
+        "llm_model": llm_model,
+        "llm_mode": llm_mode,
+        "llm_ab_test_pct": llm_ab_test_pct,
+    }
+    store.save_globals(data)
+
+    # Reset LLM client if API key changed so it picks up the new key
+    try:
+        from crowdtrans.transcriber.llm_client import reset_client
+        reset_client()
+    except Exception:
+        pass
+
+    logger.info("Global settings updated (LLM mode: %s)", llm_mode)
     return RedirectResponse("/settings/", status_code=303)
+
+
+@router.post("/llm/test")
+def test_llm(request: Request):
+    """Test LLM formatting with a sample transcript."""
+    store = get_config_store()
+    api_key = store.get_global("anthropic_api_key")
+    if not api_key:
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": False,
+            "message": "Anthropic API key not configured",
+        })
+
+    sample_text = (
+        "Clinical history is right shoulder pain. "
+        "The findings are. There is no full thickness retrotter cuff tear. "
+        "There is mild subacromial subdeltoid bursitis with bugling. "
+        "The glenohumeral joint shows no fusion. "
+        "Inclusion. Mild subacromial bursitis and impingement. "
+        "No full thickness rotator cuff tear. Thank you."
+    )
+
+    try:
+        from crowdtrans.transcriber.llm_client import llm_format, reset_client
+        reset_client()  # Ensure fresh client with current key
+        result = llm_format(
+            sample_text,
+            modality_code="US",
+            procedure_description="US SHOULDER RIGHT",
+            clinical_history="Right shoulder pain",
+        )
+        message = (
+            f"Model: {result.model} | {result.duration_ms}ms | "
+            f"{result.input_tokens} in / {result.output_tokens} out tokens\n\n"
+            f"{result.formatted_text}"
+        )
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": True,
+            "message": message,
+        })
+    except Exception as e:
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": False,
+            "message": str(e)[:500],
+        })
 
 
 @router.post("/sites/new")

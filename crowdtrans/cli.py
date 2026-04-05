@@ -180,5 +180,113 @@ def learn(no_reformat):
     click.echo(f"\nSuggestions saved to data/learning_suggestions.json")
 
 
+@cli.command("llm-test")
+@click.option("--id", "txn_id", type=int, required=True, help="Transcription ID to format")
+def llm_test(txn_id):
+    """Test LLM formatting on a single transcription (prints regex vs LLM output)."""
+    from crowdtrans.database import SessionLocal, init_db
+    from crowdtrans.models import Transcription
+    from crowdtrans.transcriber.formatter import format_transcript
+    from crowdtrans.transcriber.llm_client import llm_format
+
+    init_db()
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=txn_id).first()
+        if not txn:
+            click.echo(f"Transcription {txn_id} not found.", err=True)
+            sys.exit(1)
+        if not txn.transcript_text:
+            click.echo(f"Transcription {txn_id} has no transcript text.", err=True)
+            sys.exit(1)
+
+        click.echo(f"=== Transcription {txn_id} ({txn.accession_number or 'no accession'}) ===")
+        click.echo(f"Doctor: {txn.doctor_family_name or '?'} | Modality: {txn.modality_code or '?'}")
+        click.echo(f"Procedure: {txn.procedure_description or '?'}")
+        click.echo()
+
+        # Regex formatting
+        regex_result = format_transcript(
+            txn.transcript_text,
+            modality_code=txn.modality_code,
+            procedure_description=txn.procedure_description,
+            clinical_history=txn.complaint,
+            doctor_id=txn.doctor_id,
+        )
+        click.echo("--- REGEX FORMATTED ---")
+        click.echo(regex_result)
+        click.echo()
+
+        # LLM formatting
+        try:
+            llm_result = llm_format(
+                txn.transcript_text,
+                modality_code=txn.modality_code,
+                procedure_description=txn.procedure_description,
+                clinical_history=txn.complaint,
+                doctor_id=txn.doctor_id,
+            )
+            click.echo("--- LLM FORMATTED ---")
+            click.echo(llm_result.formatted_text)
+            click.echo()
+            click.echo(
+                f"LLM stats: {llm_result.model} | {llm_result.duration_ms}ms | "
+                f"{llm_result.input_tokens} in / {llm_result.output_tokens} out tokens"
+            )
+        except Exception as e:
+            click.echo(f"LLM formatting failed: {e}", err=True)
+
+
+@cli.command("llm-reformat")
+@click.option("--limit", default=0, type=int, help="Max transcriptions to process (0 = all)")
+def llm_reformat(limit):
+    """Backfill LLM formatting on all completed transcriptions."""
+    from crowdtrans.database import SessionLocal, init_db
+    from crowdtrans.models import Transcription
+    from crowdtrans.transcriber.llm_client import llm_format
+
+    init_db()
+    with SessionLocal() as session:
+        query = (
+            session.query(Transcription)
+            .filter(
+                Transcription.status == "complete",
+                Transcription.transcript_text.isnot(None),
+            )
+        )
+        if limit > 0:
+            query = query.limit(limit)
+        txns = query.all()
+
+        click.echo(f"LLM-reformatting {len(txns)} transcriptions...")
+        success = 0
+        failed = 0
+        for i, txn in enumerate(txns, 1):
+            try:
+                result = llm_format(
+                    txn.transcript_text,
+                    modality_code=txn.modality_code,
+                    procedure_description=txn.procedure_description,
+                    clinical_history=txn.complaint,
+                    doctor_id=txn.doctor_id,
+                )
+                txn.llm_formatted_text = result.formatted_text
+                txn.llm_model_used = result.model
+                txn.llm_format_duration_ms = result.duration_ms
+                txn.llm_input_tokens = result.input_tokens
+                txn.llm_output_tokens = result.output_tokens
+                txn.formatting_method = "hybrid"
+                success += 1
+            except Exception as e:
+                click.echo(f"  [{i}] Failed ({txn.accession_number}): {e}", err=True)
+                failed += 1
+
+            if i % 10 == 0:
+                session.commit()
+                click.echo(f"  {i}/{len(txns)} done ({success} ok, {failed} failed)")
+
+        session.commit()
+        click.echo(f"\nDone. {success} formatted, {failed} failed out of {len(txns)} total.")
+
+
 if __name__ == "__main__":
     cli()

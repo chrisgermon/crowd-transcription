@@ -55,47 +55,47 @@ function updateAudioFields(selectEl, siteId) {
 
 /* ── Report view toggle ── */
 
-function showFormatted() {
-    var formatted = document.getElementById('report-formatted');
-    var raw = document.getElementById('report-raw');
-    var btnFormatted = document.getElementById('btn-formatted');
-    var btnRaw = document.getElementById('btn-raw');
-    if (formatted) formatted.classList.remove('hidden');
-    if (raw) raw.classList.add('hidden');
-    if (btnFormatted) {
-        btnFormatted.classList.add('bg-indigo-600', 'text-white', 'border-indigo-600');
-        btnFormatted.classList.remove('bg-white', 'text-gray-700', 'border-gray-300');
-    }
-    if (btnRaw) {
-        btnRaw.classList.add('bg-white', 'text-gray-700', 'border-gray-300');
-        btnRaw.classList.remove('bg-indigo-600', 'text-white', 'border-indigo-600');
-    }
+var _tabIds = ['llm', 'formatted', 'raw'];
+
+function showTab(tabName) {
+    var activeClasses = ['bg-indigo-600', 'text-white', 'border-indigo-600'];
+    var inactiveClasses = ['bg-white', 'text-gray-700', 'border-gray-300'];
+
+    _tabIds.forEach(function (id) {
+        var panel = document.getElementById('report-' + id);
+        var btn = document.getElementById('btn-' + id);
+        if (panel) {
+            if (id === tabName) {
+                panel.classList.remove('hidden');
+            } else {
+                panel.classList.add('hidden');
+            }
+        }
+        if (btn) {
+            if (id === tabName) {
+                activeClasses.forEach(function (c) { btn.classList.add(c); });
+                inactiveClasses.forEach(function (c) { btn.classList.remove(c); });
+            } else {
+                inactiveClasses.forEach(function (c) { btn.classList.add(c); });
+                activeClasses.forEach(function (c) { btn.classList.remove(c); });
+            }
+        }
+    });
 }
 
-function showRaw() {
-    var formatted = document.getElementById('report-formatted');
-    var raw = document.getElementById('report-raw');
-    var btnFormatted = document.getElementById('btn-formatted');
-    var btnRaw = document.getElementById('btn-raw');
-    if (formatted) formatted.classList.add('hidden');
-    if (raw) raw.classList.remove('hidden');
-    if (btnRaw) {
-        btnRaw.classList.add('bg-indigo-600', 'text-white', 'border-indigo-600');
-        btnRaw.classList.remove('bg-white', 'text-gray-700', 'border-gray-300');
-    }
-    if (btnFormatted) {
-        btnFormatted.classList.add('bg-white', 'text-gray-700', 'border-gray-300');
-        btnFormatted.classList.remove('bg-indigo-600', 'text-white', 'border-indigo-600');
-    }
-}
+// Backwards compat
+function showFormatted() { showTab('formatted'); }
+function showRaw() { showTab('raw'); }
 
 /* ── Report copy ── */
 
 function copyReport() {
+    var llm = document.getElementById('report-llm');
     var formatted = document.getElementById('report-formatted');
     var raw = document.getElementById('report-raw');
     // Copy whichever view is currently visible
-    var text = (formatted && !formatted.classList.contains('hidden')) ? formatted :
+    var text = (llm && !llm.classList.contains('hidden')) ? llm :
+               (formatted && !formatted.classList.contains('hidden')) ? formatted :
                (raw && !raw.classList.contains('hidden')) ? raw : null;
     if (!text) return;
 

@@ -1184,3 +1184,60 @@ def format_transcript(
     text = re.sub(r'\.\s+\.', '.', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Hybrid formatter: regex + optional LLM pass
+# ---------------------------------------------------------------------------
+
+
+def format_transcript_hybrid(
+    text: str,
+    *,
+    modality_code: str | None = None,
+    procedure_description: str | None = None,
+    clinical_history: str | None = None,
+    doctor_id: str | None = None,
+) -> tuple[str, "LLMFormatResult | None", str]:
+    """Two-pass formatting: regex (always) + LLM (if enabled).
+
+    Returns (regex_formatted, llm_result_or_None, method_used).
+    method_used is "regex", "llm", or "hybrid".
+    """
+    import random
+
+    from crowdtrans.config_store import get_config_store
+
+    # Always run regex pipeline (fast, free, deterministic)
+    regex_result = format_transcript(
+        text, modality_code, procedure_description, clinical_history, doctor_id,
+    )
+
+    store = get_config_store()
+    mode = store.get_global("llm_mode") or "off"
+
+    if mode == "off":
+        return regex_result, None, "regex"
+
+    # A/B test: randomly skip LLM for some transcriptions
+    if mode == "ab_test":
+        pct = int(store.get_global("llm_ab_test_pct") or "50")
+        if random.randint(1, 100) > pct:
+            return regex_result, None, "regex"
+
+    # Attempt LLM formatting
+    try:
+        from crowdtrans.transcriber.llm_client import llm_format
+
+        llm_result = llm_format(
+            text,  # raw Deepgram text, not regex output
+            modality_code=modality_code,
+            procedure_description=procedure_description,
+            clinical_history=clinical_history,
+            doctor_id=doctor_id,
+        )
+        method = "llm" if mode == "llm_only" else "hybrid"
+        return regex_result, llm_result, method
+    except Exception as e:
+        logger.warning("LLM formatting failed, falling back to regex: %s", e)
+        return regex_result, None, "regex"

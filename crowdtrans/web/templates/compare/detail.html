@@ -29,15 +29,29 @@
             &middot; {{ txn.dictation_date.strftime('%Y-%m-%d') if txn.dictation_date else '—' }}
         </p>
     </div>
-    <div class="text-center">
-        {% set pct = (similarity * 100)|round(1) %}
-        <div class="w-20 h-20 rounded-full flex items-center justify-center text-xl font-bold
-            {% if pct >= 80 %}bg-green-100 text-green-700 ring-4 ring-green-300
-            {% elif pct >= 60 %}bg-yellow-100 text-yellow-700 ring-4 ring-yellow-300
-            {% else %}bg-red-100 text-red-700 ring-4 ring-red-300{% endif %}">
-            {{ "%.1f"|format(pct) }}%
+    <div class="flex items-center gap-4">
+        <div class="text-center">
+            {% set pct = (similarity * 100)|round(1) %}
+            <div class="w-20 h-20 rounded-full flex items-center justify-center text-xl font-bold
+                {% if pct >= 80 %}bg-green-100 text-green-700 ring-4 ring-green-300
+                {% elif pct >= 60 %}bg-yellow-100 text-yellow-700 ring-4 ring-yellow-300
+                {% else %}bg-red-100 text-red-700 ring-4 ring-red-300{% endif %}">
+                {{ "%.1f"|format(pct) }}%
+            </div>
+            <div class="text-xs text-gray-500 mt-1">regex</div>
         </div>
-        <div class="text-xs text-gray-500 mt-1">similarity</div>
+        {% if llm_similarity is not none %}
+        <div class="text-center">
+            {% set llm_pct = (llm_similarity * 100)|round(1) %}
+            <div class="w-20 h-20 rounded-full flex items-center justify-center text-xl font-bold
+                {% if llm_pct >= 80 %}bg-purple-100 text-purple-700 ring-4 ring-purple-300
+                {% elif llm_pct >= 60 %}bg-yellow-100 text-yellow-700 ring-4 ring-yellow-300
+                {% else %}bg-red-100 text-red-700 ring-4 ring-red-300{% endif %}">
+                {{ "%.1f"|format(llm_pct) }}%
+            </div>
+            <div class="text-xs text-gray-500 mt-1">llm</div>
+        </div>
+        {% endif %}
     </div>
 </div>
 

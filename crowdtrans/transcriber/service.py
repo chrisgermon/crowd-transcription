@@ -11,7 +11,7 @@ from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal, get_db
 from crowdtrans.models import Transcription, Watermark
 from crowdtrans.transcriber.deepgram_client import transcribe_buffer, transcribe_file
-from crowdtrans.transcriber.formatter import format_transcript
+from crowdtrans.transcriber.formatter import format_transcript, format_transcript_hybrid
 from crowdtrans.transcriber.keyterms import get_keyterms
 
 logger = logging.getLogger(__name__)
@@ -329,13 +329,24 @@ def _mark_failed(session, site: SiteConfig, txn: Transcription, error: Exception
 def _store_result(session, site: SiteConfig, txn: Transcription, result):
     txn.status = "complete"
     txn.transcript_text = result.transcript_text
-    txn.formatted_text = format_transcript(
+
+    # Hybrid formatter: regex always runs, LLM runs if enabled
+    regex_text, llm_result, method = format_transcript_hybrid(
         result.transcript_text,
         modality_code=txn.modality_code,
         procedure_description=txn.procedure_description,
         clinical_history=txn.complaint,
         doctor_id=txn.doctor_id,
     )
+    txn.formatted_text = regex_text
+    txn.formatting_method = method
+    if llm_result is not None:
+        txn.llm_formatted_text = llm_result.formatted_text
+        txn.llm_model_used = llm_result.model
+        txn.llm_format_duration_ms = llm_result.duration_ms
+        txn.llm_input_tokens = llm_result.input_tokens
+        txn.llm_output_tokens = llm_result.output_tokens
+
     txn.confidence = result.confidence
     txn.deepgram_request_id = result.request_id
     txn.processing_duration_ms = result.processing_duration_ms
@@ -346,12 +357,13 @@ def _store_result(session, site: SiteConfig, txn: Transcription, result):
     session.commit()
 
     logger.info(
-        "[%s] Transcribed dictation %d (%s) — %.1f%% confidence, %dms",
+        "[%s] Transcribed dictation %d (%s) — %.1f%% confidence, %dms, format=%s",
         site.site_id,
         txn.source_dictation_id,
         txn.accession_number or "no accession",
         (txn.confidence or 0) * 100,
         txn.processing_duration_ms or 0,
+        method,
     )
 
 

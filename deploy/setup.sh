@@ -5,7 +5,7 @@ echo "=== CrowdTrans VM Setup ==="
 
 # System packages
 apt-get update
-apt-get install -y python3.11 python3.11-venv python3-pip nfs-common freetds-dev
+apt-get install -y python3.11 python3.11-venv python3-pip nfs-common freetds-dev git
 
 # Create service user
 if ! id crowdtrans &>/dev/null; then
@@ -47,10 +47,12 @@ sudo -u crowdtrans /opt/crowdtrans/venv/bin/python -m crowdtrans.cli init-db
 # Install systemd units
 cp /opt/crowdtrans/deploy/crowdtrans-service.service /etc/systemd/system/
 cp /opt/crowdtrans/deploy/crowdtrans-web.service /etc/systemd/system/
+cp /opt/crowdtrans/deploy/crowdtrans-update.service /etc/systemd/system/
+cp /opt/crowdtrans/deploy/crowdtrans-update.timer /etc/systemd/system/
 systemctl daemon-reload
 
-systemctl enable crowdtrans-service crowdtrans-web
-systemctl start crowdtrans-service crowdtrans-web
+systemctl enable crowdtrans-service crowdtrans-web crowdtrans-update.timer
+systemctl start crowdtrans-service crowdtrans-web crowdtrans-update.timer
 
 echo "=== Setup complete ==="
 echo "Web UI: http://$(hostname -I | awk '{print $1}'):8080"

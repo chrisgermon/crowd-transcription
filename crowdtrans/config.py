@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     deepgram_model: str = "nova-3-medical"
     deepgram_language: str = "en-AU"
 
+    # --- LLM (Anthropic Claude) ---
+    anthropic_api_key: str = ""
+    llm_enabled: bool = False
+    llm_model: str = "claude-sonnet-4-20250514"
+    llm_mode: str = "off"  # off, hybrid, llm_only, ab_test
+    llm_ab_test_pct: int = 50
+
     # --- Local SQLite ---
     sqlite_db_path: Path = Path("/opt/crowdtrans/data/crowdtrans.db")
 

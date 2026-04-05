@@ -129,7 +129,13 @@ class Transcription(Base):
 
     # Transcription results
     transcript_text = Column(Text, nullable=True)  # raw Deepgram output
-    formatted_text = Column(Text, nullable=True)    # post-processed with headings
+    formatted_text = Column(Text, nullable=True)    # post-processed with headings (regex)
+    llm_formatted_text = Column(Text, nullable=True)  # LLM-formatted output
+    formatting_method = Column(String, nullable=True, default="regex")  # regex, llm, hybrid
+    llm_model_used = Column(String, nullable=True)
+    llm_format_duration_ms = Column(Integer, nullable=True)
+    llm_input_tokens = Column(Integer, nullable=True)
+    llm_output_tokens = Column(Integer, nullable=True)
     confidence = Column(Float, nullable=True)
     deepgram_request_id = Column(String, nullable=True)
     processing_duration_ms = Column(Integer, nullable=True)
@@ -152,4 +158,23 @@ class Transcription(Base):
         Index("ix_modality_code", "modality_code"),
         Index("ix_dictation_date", "dictation_date"),
         Index("ix_site_source", "site_id", "source_dictation_id"),
+    )
+
+
+class CorrectionFeedback(Base):
+    __tablename__ = "correction_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transcription_id = Column(Integer, nullable=False)
+    doctor_id = Column(String, nullable=True)
+    correction_type = Column(String, nullable=False)  # word, section, style, structure
+    original_text = Column(Text, nullable=False)
+    corrected_text = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending")  # pending, accepted, rejected
+    created_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_cf_transcription", "transcription_id"),
+        Index("ix_cf_doctor", "doctor_id"),
+        Index("ix_cf_status", "status"),
     )

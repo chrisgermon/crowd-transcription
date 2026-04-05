@@ -32,9 +32,44 @@ def _set_sqlite_pragma(dbapi_conn, connection_record):
     cursor.close()
 
 
+def _migrate_add_columns(engine_):
+    """Add new columns to existing tables if they don't exist yet.
+
+    SQLite doesn't support ALTER TABLE ADD COLUMN IF NOT EXISTS,
+    so we check column existence first via PRAGMA table_info.
+    """
+    import sqlalchemy
+
+    new_columns = {
+        "transcriptions": [
+            ("llm_formatted_text", "TEXT"),
+            ("formatting_method", "TEXT DEFAULT 'regex'"),
+            ("llm_model_used", "TEXT"),
+            ("llm_format_duration_ms", "INTEGER"),
+            ("llm_input_tokens", "INTEGER"),
+            ("llm_output_tokens", "INTEGER"),
+        ],
+    }
+
+    with engine_.connect() as conn:
+        for table, columns in new_columns.items():
+            result = conn.execute(sqlalchemy.text(f"PRAGMA table_info({table})"))
+            existing = {row[1] for row in result.fetchall()}
+            for col_name, col_type in columns:
+                if col_name not in existing:
+                    conn.execute(sqlalchemy.text(
+                        f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                    ))
+                    logger.info("Added column %s.%s", table, col_name)
+            conn.commit()
+
+
 def init_db():
     settings.sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
+
+    # Migrate: add new columns to existing tables
+    _migrate_add_columns(engine)
 
     # Seed site_configs + global_settings from .env on first run
     store = get_config_store()

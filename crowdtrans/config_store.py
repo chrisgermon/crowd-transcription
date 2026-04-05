@@ -22,6 +22,11 @@ _GLOBAL_KEYS = {
     "deepgram_language": "deepgram_language",
     "poll_interval_seconds": "poll_interval_seconds",
     "batch_size": "batch_size",
+    "anthropic_api_key": "anthropic_api_key",
+    "llm_enabled": "llm_enabled",
+    "llm_model": "llm_model",
+    "llm_mode": "llm_mode",
+    "llm_ab_test_pct": "llm_ab_test_pct",
 }
 
 

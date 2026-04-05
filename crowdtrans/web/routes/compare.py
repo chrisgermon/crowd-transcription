@@ -249,9 +249,14 @@ def _compare_list_impl(request, modality, doctor, sort, page):
             our_norm = _normalise_for_compare(txn.formatted_text, txn.procedure_description)
             visage_norm = _normalise_for_compare(visage_text)
             ratio = _similarity_ratio(our_norm, visage_norm)
+            llm_ratio = None
+            if txn.llm_formatted_text:
+                llm_norm = _normalise_for_compare(txn.llm_formatted_text, txn.procedure_description)
+                llm_ratio = _similarity_ratio(llm_norm, visage_norm)
             items.append({
                 "txn": txn,
                 "similarity": ratio,
+                "llm_similarity": llm_ratio,
                 "visage_preview": visage_text[:150] + "..." if len(visage_text) > 150 else visage_text,
                 "our_preview": (txn.formatted_text[:150] + "...") if len(txn.formatted_text) > 150 else txn.formatted_text,
             })
@@ -335,6 +340,14 @@ def _compare_detail_impl(request, transcription_id):
         diff_segments = _compute_word_diff(our_norm, visage_norm)
         similarity = _similarity_ratio(our_norm, visage_norm)
 
+        # LLM similarity (when LLM output exists)
+        llm_similarity = None
+        llm_diff_segments = None
+        if txn.llm_formatted_text:
+            llm_norm = _normalise_for_compare(txn.llm_formatted_text, txn.procedure_description)
+            llm_similarity = _similarity_ratio(llm_norm, visage_norm)
+            llm_diff_segments = _compute_word_diff(llm_norm, visage_norm)
+
         # Count differences by type
         diff_stats = {"equal": 0, "insert": 0, "delete": 0, "replace": 0}
         for seg in diff_segments:
@@ -356,5 +369,7 @@ def _compare_detail_impl(request, transcription_id):
         "visage_normalised": visage_norm,
         "diff_segments": diff_segments,
         "similarity": similarity,
+        "llm_similarity": llm_similarity,
+        "llm_diff_segments": llm_diff_segments,
         "diff_stats": diff_stats,
     })

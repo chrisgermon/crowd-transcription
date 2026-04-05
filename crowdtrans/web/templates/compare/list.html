@@ -81,7 +81,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="ml-4 flex-shrink-0 text-center">
+                <div class="ml-4 flex-shrink-0 text-center space-y-1">
                     {% set pct = (item.similarity * 100)|round(1) %}
                     <div class="w-14 h-14 rounded-full flex items-center justify-center text-sm font-bold
                         {% if pct >= 80 %}bg-green-100 text-green-700 ring-2 ring-green-300
@@ -89,7 +89,17 @@
                         {% else %}bg-red-100 text-red-700 ring-2 ring-red-300{% endif %}">
                         {{ "%.0f"|format(pct) }}%
                     </div>
-                    <div class="text-xs text-gray-400 mt-1">match</div>
+                    <div class="text-xs text-gray-400">regex</div>
+                    {% if item.llm_similarity is not none %}
+                    {% set llm_pct = (item.llm_similarity * 100)|round(1) %}
+                    <div class="w-14 h-14 rounded-full flex items-center justify-center text-sm font-bold
+                        {% if llm_pct >= 80 %}bg-purple-100 text-purple-700 ring-2 ring-purple-300
+                        {% elif llm_pct >= 60 %}bg-yellow-100 text-yellow-700 ring-2 ring-yellow-300
+                        {% else %}bg-red-100 text-red-700 ring-2 ring-red-300{% endif %}">
+                        {{ "%.0f"|format(llm_pct) }}%
+                    </div>
+                    <div class="text-xs text-gray-400">llm</div>
+                    {% endif %}
                 </div>
             </div>
         </div>
