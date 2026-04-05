@@ -31,6 +31,14 @@
             </select>
         </div>
         <div>
+            <select name="worksite" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="">All worksites</option>
+                {% for w in worksites %}
+                <option value="{{ w }}" {% if worksite == w %}selected{% endif %}>{{ w }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
             <input type="text" name="doctor" value="{{ doctor }}" placeholder="Doctor name..."
                    class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
         </div>
@@ -68,6 +76,7 @@
                     <div class="text-xs text-gray-400 mb-2">
                         {{ item.txn.patient_family_name or '' }}{% if item.txn.patient_given_names %}, {{ item.txn.patient_given_names }}{% endif %}
                         &middot; Dr {{ item.txn.doctor_family_name or '?' }}
+                        {% if item.txn.facility_name %}&middot; <span class="text-gray-500">{{ item.txn.facility_name }}</span>{% endif %}
                         &middot; {{ item.txn.dictation_date.strftime('%Y-%m-%d') if item.txn.dictation_date else '—' }}
                     </div>
                     <div class="grid grid-cols-2 gap-4">
@@ -117,11 +126,11 @@
     <div class="text-sm text-gray-500">Page {{ page }} of {{ total_pages }}</div>
     <div class="flex space-x-2">
         {% if page > 1 %}
-        <a href="?modality={{ modality }}&doctor={{ doctor }}&sort={{ sort }}&page={{ page - 1 }}"
+        <a href="?modality={{ modality }}&worksite={{ worksite }}&doctor={{ doctor }}&sort={{ sort }}&page={{ page - 1 }}"
            class="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:bg-gray-100">Previous</a>
         {% endif %}
         {% if page < total_pages %}
-        <a href="?modality={{ modality }}&doctor={{ doctor }}&sort={{ sort }}&page={{ page + 1 }}"
+        <a href="?modality={{ modality }}&worksite={{ worksite }}&doctor={{ doctor }}&sort={{ sort }}&page={{ page + 1 }}"
            class="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:bg-gray-100">Next</a>
         {% endif %}
     </div>

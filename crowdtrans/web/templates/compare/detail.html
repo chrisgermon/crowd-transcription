@@ -26,6 +26,7 @@
             {{ txn.procedure_description or '' }}
             {% if txn.modality_code %}<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ txn.modality_code }}</span>{% endif %}
             &middot; Dr {{ txn.doctor_family_name or '?' }}
+            {% if txn.facility_name %}&middot; <span class="font-medium">{{ txn.facility_name }}</span>{% endif %}
             &middot; {{ txn.dictation_date.strftime('%Y-%m-%d') if txn.dictation_date else '—' }}
         </p>
     </div>

@@ -134,14 +134,15 @@ def _similarity_ratio(our_text: str, visage_text: str) -> float:
 def compare_list(
     request: Request,
     modality: str = Query("", description="Filter by modality"),
+    worksite: str = Query("", description="Filter by worksite"),
     doctor: str = Query("", description="Filter by doctor"),
     sort: str = Query("similarity", description="Sort by: similarity, date, id"),
     page: int = Query(1, ge=1),
 ):
-    """List transcriptions with their matching Visage reports and similarity scores."""
+    """List transcriptions with their matching Karisma reports and similarity scores."""
     for attempt in range(3):
         try:
-            return _compare_list_impl(request, modality, doctor, sort, page)
+            return _compare_list_impl(request, modality, worksite, doctor, sort, page)
         except OperationalError as e:
             logger.warning("SQLite error on compare list (attempt %d): %s", attempt + 1, e)
             if attempt < 2:
@@ -150,7 +151,7 @@ def compare_list(
                 raise HTTPException(status_code=503, detail="Database temporarily unavailable, please retry")
 
 
-def _compare_list_impl(request, modality, doctor, sort, page):
+def _compare_list_impl(request, modality, worksite, doctor, sort, page):
     with SessionLocal() as session:
         # Base query with heavy columns deferred
         base_query = (
@@ -168,6 +169,8 @@ def _compare_list_impl(request, modality, doctor, sort, page):
         )
         if modality:
             base_query = base_query.filter(Transcription.modality_code == modality)
+        if worksite:
+            base_query = base_query.filter(Transcription.facility_name == worksite)
         if doctor:
             base_query = base_query.filter(Transcription.doctor_family_name.ilike(f"%{doctor}%"))
 
@@ -231,6 +234,13 @@ def _compare_list_impl(request, modality, doctor, sort, page):
             .order_by(Transcription.modality_code)
             .all()
         ]
+        worksites = [
+            r[0] for r in session.query(Transcription.facility_name)
+            .filter(Transcription.facility_name.isnot(None), Transcription.site_id == "karisma")
+            .distinct()
+            .order_by(Transcription.facility_name)
+            .all()
+        ]
 
     return templates.TemplateResponse("compare/list.html", {
         "request": request,
@@ -240,9 +250,11 @@ def _compare_list_impl(request, modality, doctor, sort, page):
         "page": page,
         "total_pages": total_pages,
         "modality": modality,
+        "worksite": worksite,
         "doctor": doctor,
         "sort": sort,
         "modalities": modalities,
+        "worksites": worksites,
     })
 
 
