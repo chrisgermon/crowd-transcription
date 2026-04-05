@@ -148,6 +148,13 @@ def _process_visage(session, site: SiteConfig, txn: Transcription) -> bool:
 # Karisma helpers
 # ---------------------------------------------------------------------------
 
+def _get_excluded_worksites() -> set[str]:
+    """Load excluded worksite names from config (cached per poll cycle)."""
+    store = get_config_store()
+    raw = store.get_global("excluded_worksites") or ""
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
 def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
     from crowdtrans.karisma import fetch_new_dictations
 
@@ -155,7 +162,10 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
     if not rows:
         return 0
 
+    excluded = _get_excluded_worksites()
+
     count = 0
+    skipped_sites = 0
     max_tk = wm.last_dictation_id
     for row in rows:
         tk = row["TransactionKey"]
@@ -166,6 +176,13 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
         )
         if existing:
             max_tk = max(max_tk, tk)
+            continue
+
+        # Skip excluded worksites
+        worksite_name = row.get("WorkSiteName") or ""
+        if worksite_name in excluded:
+            max_tk = max(max_tk, tk)
+            skipped_sites += 1
             continue
 
         # Parse dictating practitioner name into parts
@@ -221,8 +238,11 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
     wm.last_poll_at = datetime.datetime.utcnow()
     session.commit()
 
-    if count > 0:
-        logger.info("[%s] Discovered %d new dictations (watermark now %d)", site.site_id, count, max_tk)
+    if count > 0 or skipped_sites > 0:
+        logger.info(
+            "[%s] Discovered %d new dictations, skipped %d excluded worksites (watermark now %d)",
+            site.site_id, count, skipped_sites, max_tk,
+        )
     return count
 
 

@@ -27,6 +27,7 @@ _GLOBAL_KEYS = {
     "llm_model": "llm_model",
     "llm_mode": "llm_mode",
     "llm_ab_test_pct": "llm_ab_test_pct",
+    "excluded_worksites": "excluded_worksites",
 }
 
 

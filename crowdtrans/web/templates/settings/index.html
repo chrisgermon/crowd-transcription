@@ -83,6 +83,37 @@
         </form>
     </div>
 
+    {# ── Worksite Exclusion ── #}
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-900">Worksite Exclusion</h2>
+            <p class="text-sm text-gray-500 mt-1">Select worksites to exclude from transcription processing. New dictations from excluded sites will be skipped.</p>
+        </div>
+        <form method="post" action="/settings/worksites" class="px-6 py-5">
+            {% if worksites %}
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-4">
+                {% for ws in worksites %}
+                <label class="flex items-center space-x-2 px-3 py-2 rounded hover:bg-gray-50 cursor-pointer">
+                    <input type="checkbox" name="excluded" value="{{ ws.name }}"
+                           {{ 'checked' if ws.excluded }}
+                           class="h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500">
+                    <span class="text-sm text-gray-700">{{ ws.name }}</span>
+                    <span class="text-xs text-gray-400">({{ ws.count }})</span>
+                </label>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-sm text-gray-500 mb-4">No worksites found in transcription data.</p>
+            {% endif %}
+            <div class="flex justify-end">
+                <button type="submit"
+                        class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
+                    Save Exclusions
+                </button>
+            </div>
+        </form>
+    </div>
+
     {# ── LLM Configuration ── #}
     <div class="bg-white shadow rounded-lg">
         <div class="px-6 py-4 border-b border-gray-200">

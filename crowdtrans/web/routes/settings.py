@@ -1,11 +1,14 @@
 """Settings routes — view/edit global config and site configs."""
 
 import logging
+from typing import List
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from crowdtrans.config_store import get_config_store
+from crowdtrans.database import SessionLocal
+from crowdtrans.models import Transcription
 from crowdtrans.web.app import templates
 
 logger = logging.getLogger(__name__)
@@ -18,11 +21,48 @@ def settings_page(request: Request):
     store = get_config_store()
     globals_ = store.get_all_globals()
     sites = store.get_all_site_rows()
+
+    # Build worksite list with exclusion status
+    excluded_raw = store.get_global("excluded_worksites") or ""
+    excluded_set = {s.strip() for s in excluded_raw.split(",") if s.strip()}
+
+    worksites = []
+    with SessionLocal() as session:
+        from sqlalchemy import func
+        rows = (
+            session.query(
+                Transcription.facility_name,
+                func.count(Transcription.id).label("cnt"),
+            )
+            .filter(Transcription.facility_name.isnot(None))
+            .group_by(Transcription.facility_name)
+            .order_by(Transcription.facility_name)
+            .all()
+        )
+        for name, cnt in rows:
+            worksites.append({
+                "name": name,
+                "count": cnt,
+                "excluded": name in excluded_set,
+            })
+
     return templates.TemplateResponse("settings/index.html", {
         "request": request,
         "globals": globals_,
         "sites": sites,
+        "worksites": worksites,
     })
+
+
+@router.post("/worksites")
+async def save_worksites(request: Request):
+    """Save excluded worksites from checkbox form."""
+    form = await request.form()
+    excluded = form.getlist("excluded")
+    store = get_config_store()
+    store.set_global("excluded_worksites", ",".join(excluded))
+    logger.info("Updated excluded worksites: %d sites excluded", len(excluded))
+    return RedirectResponse("/settings/", status_code=303)
 
 
 @router.post("/global")

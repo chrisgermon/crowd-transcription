@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     llm_mode: str = "off"  # off, hybrid, llm_only, ab_test
     llm_ab_test_pct: int = 50
 
+    # --- Worksite filtering ---
+    excluded_worksites: str = ""  # comma-separated list of facility names to skip
+
     # --- Local SQLite ---
     sqlite_db_path: Path = Path("/opt/crowdtrans/data/crowdtrans.db")
 
