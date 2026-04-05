@@ -57,7 +57,7 @@
 </div>
 
 <!-- Audio Player -->
-{% if txn.audio_relative_path and txn.audio_basename %}
+{% if txn.audio_relative_path and txn.audio_basename or txn.extent_key %}
 <div class="bg-white rounded-lg shadow mb-6">
     <div class="px-5 py-3 flex items-center space-x-4">
         <div class="flex items-center space-x-2 flex-shrink-0">
@@ -67,7 +67,7 @@
             <span class="text-sm font-medium text-gray-700">Dictation Audio</span>
         </div>
         <audio id="audio-player" controls preload="none" class="flex-1 h-10" style="min-width: 0;">
-            <source src="/api/audio/{{ txn.id }}" type="{{ txn.audio_mime_type or 'audio/ogg' }}">
+            <source src="/api/audio/{{ txn.id }}" type="{{ txn.audio_mime_type or ('audio/wav' if txn.extent_key else 'audio/ogg') }}">
             Your browser does not support the audio element.
         </audio>
         <div class="flex items-center space-x-2 flex-shrink-0">
