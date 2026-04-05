@@ -132,6 +132,86 @@ def fetch_audio_blob(site: SiteConfig, extent_key: int) -> bytes | None:
         conn.close()
 
 
+REPORT_QUERY = """\
+SELECT
+    DI.TransactionKey AS DictationTK,
+    E.Buffer AS ReportXML
+FROM [Version].[Karisma.Dictation.Instance] DI
+JOIN [Version].[Karisma.Dictation.Instance-ReportInstanceChange] DIRC
+    ON DI.[Key] = DIRC.ParentKey
+JOIN [Version].[Karisma.Report.InstanceChange] RIC
+    ON DIRC.ChildKey = RIC.[Key]
+JOIN [Version].[Karisma.Report.InstanceValue] RIV
+    ON RIV.ReportInstanceChangeKey = RIC.[Key]
+    AND RIV.[Current] = 1
+JOIN [System].[Extent] E
+    ON RIV.BlobKey = E.[Key]
+WHERE RIV.BlobKey IS NOT NULL
+  AND E.Buffer IS NOT NULL
+  AND DI.TransactionKey IN ({placeholders})
+"""
+
+
+def _parse_report_xml(xml_bytes: bytes) -> str:
+    """Extract plain text from Karisma WordProcessor XML report."""
+    import re
+    try:
+        text = xml_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = xml_bytes.decode("utf-16")
+        except UnicodeDecodeError:
+            return ""
+
+    # Extract text content from <Text ...>content</Text> and bare <Paragraph> text
+    paragraphs = []
+    current_para = []
+
+    for match in re.finditer(r"<(Paragraph|Text|/Paragraph)[^>]*>([^<]*)", text):
+        tag = match.group(1)
+        content = match.group(2).strip()
+        if tag == "Text" and content:
+            current_para.append(content)
+        elif tag == "/Paragraph":
+            if current_para:
+                paragraphs.append(" ".join(current_para))
+            else:
+                paragraphs.append("")  # empty paragraph = blank line
+            current_para = []
+
+    # Join paragraphs, collapse multiple blank lines
+    result = "\n".join(paragraphs)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def fetch_reports(site: SiteConfig, transaction_keys: list[int]) -> dict[int, str]:
+    """Fetch typed report text for a batch of dictation TransactionKeys.
+
+    Returns {transaction_key: plain_text_report} for reports that exist.
+    """
+    if not transaction_keys:
+        return {}
+    conn = _get_connection(site)
+    try:
+        reports = {}
+        batch_size = 200
+        for i in range(0, len(transaction_keys), batch_size):
+            batch = transaction_keys[i:i + batch_size]
+            placeholders = ",".join(["%d"] * len(batch))
+            query = REPORT_QUERY.format(placeholders=placeholders)
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(batch))
+                for row in cur:
+                    xml_bytes = bytes(row["ReportXML"])
+                    text = _parse_report_xml(xml_bytes)
+                    if text and len(text) > 20:
+                        reports[row["DictationTK"]] = text
+        return reports
+    finally:
+        conn.close()
+
+
 def check_connection(site: SiteConfig) -> dict[str, Any]:
     """Test MSSQL connectivity and return basic info."""
     conn = _get_connection(site)

@@ -1,4 +1,4 @@
-"""Compare CrowdScription transcriptions against Visage final reports."""
+"""Compare CrowdScription transcriptions against Karisma typed reports."""
 
 import logging
 import re
@@ -6,8 +6,6 @@ import time
 from difflib import SequenceMatcher
 from typing import Any
 
-import psycopg2
-import psycopg2.extras
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy.exc import OperationalError
 
@@ -24,69 +22,20 @@ router = APIRouter(prefix="/compare")
 
 PAGE_SIZE = 25
 
-# ── Visage report fetching ──────────────────────────────────────────────
+# ── Karisma report fetching ─────────────────────────────────────────────
 
 
-def _get_visage_connection():
-    """Get a read-only connection to the Visage RIS PostgreSQL database."""
+def _fetch_karisma_reports(transaction_keys: list[int]) -> dict[int, str]:
+    """Fetch typed report text for a batch of Karisma TransactionKeys."""
+    if not transaction_keys:
+        return {}
     store = get_config_store()
     sites = store.get_enabled_site_configs()
-    visage = next((s for s in sites if s.ris_type == "visage"), None)
-    if not visage:
-        return None
-    return psycopg2.connect(
-        host=visage.db_host,
-        port=visage.db_port,
-        dbname=visage.db_name,
-        user=visage.db_user,
-        password=visage.db_password,
-        options="-c default_transaction_read_only=on",
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
-
-
-def _strip_html(html: str) -> str:
-    """Strip HTML tags from Visage report body."""
-    if not html:
-        return ""
-    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"&nbsp;", " ", text)
-    text = re.sub(r"&amp;", "&", text)
-    text = re.sub(r"&lt;", "<", text)
-    text = re.sub(r"&gt;", ">", text)
-    # Normalise whitespace but preserve newlines
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r" *\n *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def _fetch_visage_reports(dictation_ids: list[int]) -> dict[int, str]:
-    """Fetch final report bodies for a batch of dictation IDs."""
-    if not dictation_ids:
+    karisma = next((s for s in sites if s.ris_type == "karisma"), None)
+    if not karisma:
         return {}
-    conn = _get_visage_connection()
-    if not conn:
-        return {}
-    try:
-        with conn.cursor() as cur:
-            placeholders = ",".join(["%s"] * len(dictation_ids))
-            cur.execute(
-                "SELECT d.id AS dictation_id, cd.report_body "
-                "FROM dictation d "
-                "JOIN clinical_document cd ON cd.id = d.clinical_document_id "
-                "WHERE cd.status = 'FINAL' "
-                "AND cd.report_body IS NOT NULL "
-                "AND d.id IN (" + placeholders + ")",
-                dictation_ids,
-            )
-            return {
-                row["dictation_id"]: _strip_html(row["report_body"])
-                for row in cur.fetchall()
-            }
-    finally:
-        conn.close()
+    from crowdtrans.karisma import fetch_reports
+    return fetch_reports(karisma, transaction_keys)
 
 
 # ── Text normalisation for comparison ───────────────────────────────────
@@ -214,7 +163,7 @@ def _compare_list_impl(request, modality, doctor, sort, page):
             .filter(
                 Transcription.status == "complete",
                 Transcription.formatted_text.isnot(None),
-                Transcription.site_id == "visage",
+                Transcription.site_id == "karisma",
             )
         )
         if modality:
@@ -238,7 +187,7 @@ def _compare_list_impl(request, modality, doctor, sort, page):
 
         # Fetch Visage reports only for the current page
         dict_ids = [t.source_dictation_id for t in page_txns]
-        visage_reports = _fetch_visage_reports(dict_ids)
+        visage_reports = _fetch_karisma_reports(dict_ids)
 
         # Build comparison items for this page
         items = []
@@ -277,7 +226,7 @@ def _compare_list_impl(request, modality, doctor, sort, page):
         # Filter dropdowns
         modalities = [
             r[0] for r in session.query(Transcription.modality_code)
-            .filter(Transcription.modality_code.isnot(None), Transcription.site_id == "visage")
+            .filter(Transcription.modality_code.isnot(None), Transcription.site_id == "karisma")
             .distinct()
             .order_by(Transcription.modality_code)
             .all()
@@ -326,7 +275,7 @@ def _compare_detail_impl(request, transcription_id):
             raise HTTPException(status_code=404, detail="Transcription not found")
 
         # Fetch matching Visage report
-        visage_reports = _fetch_visage_reports([txn.source_dictation_id])
+        visage_reports = _fetch_karisma_reports([txn.source_dictation_id])
         visage_text = visage_reports.get(txn.source_dictation_id)
 
         if visage_text is None:

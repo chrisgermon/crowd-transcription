@@ -17,9 +17,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-import psycopg2
-import psycopg2.extras
-
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
 from crowdtrans.models import Transcription
@@ -40,40 +37,6 @@ def _get_data_dir() -> Path:
         return _DATA_DIR
     _DATA_DIR_DEV.mkdir(parents=True, exist_ok=True)
     return _DATA_DIR_DEV
-
-
-def _get_visage_connection():
-    """Get a read-only connection to the Visage RIS PostgreSQL database."""
-    store = get_config_store()
-    sites = store.get_enabled_site_configs()
-    visage = next((s for s in sites if s.ris_type == "visage"), None)
-    if not visage:
-        return None
-    return psycopg2.connect(
-        host=visage.db_host,
-        port=visage.db_port,
-        dbname=visage.db_name,
-        user=visage.db_user,
-        password=visage.db_password,
-        options="-c default_transaction_read_only=on",
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
-
-
-def _strip_html(html: str) -> str:
-    """Strip HTML tags from Visage report body."""
-    if not html:
-        return ""
-    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"&nbsp;", " ", text)
-    text = re.sub(r"&amp;", "&", text)
-    text = re.sub(r"&lt;", "<", text)
-    text = re.sub(r"&gt;", ">", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r" *\n *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
 
 # ── Section structure extraction ──────────────────────────────────────────
@@ -98,9 +61,9 @@ _HEADING_CANONICAL = {
 }
 
 
-def _extract_section_sequence(report_html: str) -> list[str]:
-    """Extract the sequence of section headings from a Visage report."""
-    plain = re.sub(r"<[^>]+>", " ", report_html)
+def _extract_section_sequence(report_text: str) -> list[str]:
+    """Extract the sequence of section headings from a report."""
+    plain = report_text
     headings = []
     seen = set()
     for m in _HEADING_RE.finditer(plain):
@@ -181,7 +144,7 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
             .filter(
                 Transcription.status == "complete",
                 Transcription.formatted_text.isnot(None),
-                Transcription.site_id == "visage",
+                Transcription.site_id == "karisma",
             )
         )
         if limit > 0:
@@ -204,37 +167,20 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
         logger.warning("No completed Visage transcriptions found")
         return {"doctor_profiles": {}, "global_corrections": [], "stats": {"pairs": 0}}
 
-    # Fetch matching Visage reports
-    conn = _get_visage_connection()
-    if not conn:
-        logger.error("Cannot connect to Visage database")
+    # Fetch matching Karisma typed reports
+    store = get_config_store()
+    sites = store.get_enabled_site_configs()
+    karisma = next((s for s in sites if s.ris_type == "karisma"), None)
+    if not karisma:
+        logger.error("No Karisma site configured")
         return {"doctor_profiles": {}, "global_corrections": [], "stats": {"pairs": 0}}
 
     dict_ids = [t["dictation_id"] for t in txn_data]
 
-    try:
-        with conn.cursor() as cur:
-            # Fetch reports in batches to avoid huge IN clauses
-            reports = {}
-            batch_size = 500
-            for i in range(0, len(dict_ids), batch_size):
-                batch = dict_ids[i : i + batch_size]
-                placeholders = ",".join(["%s"] * len(batch))
-                cur.execute(
-                    "SELECT d.id AS dictation_id, cd.report_body "
-                    "FROM dictation d "
-                    "JOIN clinical_document cd ON cd.id = d.clinical_document_id "
-                    "WHERE cd.status = 'FINAL' "
-                    "AND cd.report_body IS NOT NULL "
-                    "AND d.id IN (" + placeholders + ")",
-                    batch,
-                )
-                for row in cur.fetchall():
-                    reports[row["dictation_id"]] = row["report_body"]
-    finally:
-        conn.close()
+    from crowdtrans.karisma import fetch_reports
+    reports = fetch_reports(karisma, dict_ids)
 
-    logger.info("Fetched %d Visage reports for %d transcriptions", len(reports), len(txn_data))
+    logger.info("Fetched %d Karisma reports for %d transcriptions", len(reports), len(txn_data))
 
     # ── Analyze each pair ──────────────────────────────────────────────
     # Per-doctor accumulators
@@ -257,11 +203,9 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
     total_similarity = 0.0
 
     for txn in txn_data:
-        report_html = reports.get(txn["dictation_id"])
-        if not report_html:
+        report_text = reports.get(txn["dictation_id"])
+        if not report_text:
             continue
-
-        report_text = _strip_html(report_html)
         our_text = txn["formatted_text"]
         doctor_id = txn["doctor_id"]
         modality = txn["modality_code"] or "UNKNOWN"
@@ -308,7 +252,7 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
             global_corrections[(wrong, right)] += 1
 
         # Section structure from report
-        sections = _extract_section_sequence(report_html)
+        sections = _extract_section_sequence(report_text)
         section_seq = " > ".join(sections) if sections else "(none)"
 
         # Per-doctor accumulation
