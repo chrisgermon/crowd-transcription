@@ -121,6 +121,81 @@ def _get_doctor_context(doctor_id: str | None, modality_code: str | None) -> str
 
 
 # ---------------------------------------------------------------------------
+# Example report fetching (few-shot learning from Karisma)
+# ---------------------------------------------------------------------------
+
+_EXAMPLE_CACHE: dict[str, list[str]] = {}
+
+
+def _get_example_reports(doctor_id: str | None, modality_code: str | None, limit: int = 3) -> list[str]:
+    """Fetch recent typed Karisma reports for the same doctor+modality.
+
+    Used as few-shot examples so the LLM matches the doctor's style.
+    Results are cached in memory to avoid repeated DB queries.
+    """
+    cache_key = f"{doctor_id}:{modality_code}"
+    if cache_key in _EXAMPLE_CACHE:
+        return _EXAMPLE_CACHE[cache_key]
+
+    examples = []
+    try:
+        from crowdtrans.config_store import get_config_store
+        from crowdtrans.database import SessionLocal
+        from crowdtrans.models import Transcription
+
+        store = get_config_store()
+        sites = store.get_enabled_site_configs()
+        karisma = next((s for s in sites if s.ris_type == "karisma"), None)
+        if not karisma:
+            return []
+
+        # Get recent completed transcriptions for this doctor+modality
+        with SessionLocal() as session:
+            query = (
+                session.query(Transcription.source_dictation_id)
+                .filter(
+                    Transcription.status == "complete",
+                    Transcription.site_id == "karisma",
+                )
+            )
+            if doctor_id:
+                query = query.filter(Transcription.doctor_id == str(doctor_id))
+            if modality_code:
+                query = query.filter(Transcription.modality_code == modality_code)
+
+            txn_ids = [
+                r[0] for r in query.order_by(Transcription.dictation_date.desc())
+                .limit(limit * 3)  # fetch more in case some don't have reports
+                .all()
+            ]
+
+        if not txn_ids:
+            return []
+
+        # Fetch the typed reports from Karisma
+        from crowdtrans.karisma import fetch_reports
+        reports = fetch_reports(karisma, txn_ids)
+
+        # Take up to `limit` reports, prefer shorter ones (more typical)
+        for tk in txn_ids:
+            if tk in reports and len(reports[tk]) > 50:
+                examples.append(reports[tk])
+                if len(examples) >= limit:
+                    break
+
+    except Exception as e:
+        logger.warning("Failed to fetch example reports: %s", e)
+
+    _EXAMPLE_CACHE[cache_key] = examples
+    return examples
+
+
+def clear_example_cache():
+    """Clear the example report cache (e.g. after learning runs)."""
+    _EXAMPLE_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
 # Modality section structure defaults
 # ---------------------------------------------------------------------------
 
@@ -146,7 +221,7 @@ Your task is to take a raw speech-to-text transcript of a radiologist's dictatio
 
 ## Rules
 
-1. **Structure**: Organise the report into standard sections with UPPERCASE headings on their own line. The section structure depends on the imaging modality.
+1. **Structure**: Organise the report into standard sections with headings on their own line. If example reports from this doctor are provided, match their exact heading format (e.g. "Clinical Details:" vs "CLINICAL HISTORY", "Findings:" vs "FINDINGS"). Otherwise default to UPPERCASE headings. The section structure depends on the imaging modality.
 
 2. **Preserve clinical content exactly**: Do NOT add, remove, or change clinical findings, diagnoses, or measurements. Your job is formatting and correcting speech recognition errors only.
 
@@ -163,6 +238,12 @@ Your task is to take a raw speech-to-text transcript of a radiologist's dictatio
    - "fracturing" -> "fracture" (reports use noun form)
    - "cell stone" -> "Celestone" (steroid injection)
    - "sign of it" -> "synovitis"
+   - "calcification" -> "opacification" (when describing sinus/nasal soft tissue density)
+   - "anterocoanal" -> "antrochoanal" (polyp)
+   - "mucus" -> "mucous" (when used as adjective, e.g. "mucous retention cyst")
+   - "would be" -> "appear" (e.g. "joints would be normal" -> "joints appear normal")
+   - "Comic underline" / "underline" -> dictation command artifacts, remove entirely
+   - "Unloud" / "See sinuses" -> dictation artifacts at start, remove
    Use medical context to identify and correct similar mishears not listed above.
 
 4. **Australian English spelling**: Use AU/UK spelling throughout:
@@ -192,7 +273,7 @@ Your task is to take a raw speech-to-text transcript of a radiologist's dictatio
 
 11. **Spine level sub-headings**: Preserve sub-headings like "L4/5:", "C5/6:" within the FINDINGS section — these are NOT new top-level sections.
 
-12. **Output format**: Return ONLY the formatted report text. No markdown, no explanations, no preamble. Section headings in UPPERCASE on their own line, with a blank line before each heading.
+12. **Output format**: Return ONLY the formatted report text. No markdown, no explanations, no preamble. Section headings on their own line with a blank line before each heading. Match the heading style from the doctor's example reports if provided.
 """
 
 
@@ -233,6 +314,24 @@ def llm_format(
     doctor_ctx = _get_doctor_context(doctor_id, modality_code)
     if doctor_ctx:
         system += doctor_ctx
+
+    # Add example reports from this doctor for style matching
+    examples = _get_example_reports(doctor_id, modality_code, limit=3)
+    if examples:
+        system += "\n\n## Style Reference: Example Reports from This Doctor\n"
+        system += "Match the formatting style, heading names, paragraph structure, "
+        system += "and terminology preferences shown in these example reports:\n"
+        for i, ex in enumerate(examples, 1):
+            # Truncate long examples to keep token usage reasonable
+            truncated = ex[:1500] if len(ex) > 1500 else ex
+            system += f"\n--- Example {i} ---\n{truncated}\n"
+        system += "\n--- End of examples ---\n"
+        system += (
+            "\nIMPORTANT: Use the same heading names (e.g. 'Clinical Details:' vs "
+            "'Clinical History:', 'Report:' vs 'Findings:'), the same paragraph "
+            "spacing, and the same style of phrasing as these examples. "
+            "The doctor's preferred style takes priority over the default structure.\n"
+        )
 
     # Build user message
     parts = []
