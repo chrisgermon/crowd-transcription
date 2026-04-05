@@ -8,17 +8,17 @@
 </div>
 
 <!-- Search & Filters -->
-<form method="get" class="bg-white rounded-lg shadow p-4 mb-6">
+<form method="get" id="filter-form" class="bg-white rounded-lg shadow p-4 mb-6">
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
         <div class="lg:col-span-2">
             <input type="text" name="q" value="{{ q }}" placeholder="Search accession, patient, text..."
                    class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
         </div>
         <div>
-            <select name="site" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
-                <option value="">All sites</option>
-                {% for sc in site_configs %}
-                <option value="{{ sc.site_id }}" {% if site == sc.site_id %}selected{% endif %}>{{ sc.site_name }}</option>
+            <select name="worksite" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="">All worksites</option>
+                {% for w in worksites %}
+                <option value="{{ w }}" {% if worksite == w %}selected{% endif %}>{{ w }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -39,8 +39,12 @@
             </select>
         </div>
         <div>
-            <input type="text" name="doctor" value="{{ doctor }}" placeholder="Doctor name..."
-                   class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+            <select name="doctor" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="">All doctors</option>
+                {% for d in doctors %}
+                <option value="{{ d }}" {% if doctor == d %}selected{% endif %}>{{ d }}</option>
+                {% endfor %}
+            </select>
         </div>
         <div>
             <button type="submit" class="w-full bg-indigo-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-indigo-700">
@@ -50,20 +54,52 @@
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3 mt-3">
         <div>
-            <input type="date" name="date_from" value="{{ date_from }}"
+            <input type="date" name="date_from" id="date_from" value="{{ date_from }}"
                    class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
         </div>
         <div>
-            <input type="date" name="date_to" value="{{ date_to }}"
+            <input type="date" name="date_to" id="date_to" value="{{ date_to }}"
                    class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
         </div>
-        <div class="lg:col-span-5">
-            {% if q or site or status or modality or doctor or date_from or date_to %}
+        <div class="lg:col-span-3 flex items-center gap-2 flex-wrap">
+            <span class="text-xs text-gray-400">Quick:</span>
+            <button type="button" onclick="setDateRange(0)" class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">Today</button>
+            <button type="button" onclick="setDateRange(1)" class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">Yesterday</button>
+            <button type="button" onclick="setDateRange(7)" class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">Last 7 days</button>
+            <button type="button" onclick="setDateRange(30)" class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">Last 30 days</button>
+            <button type="button" onclick="setDateRange(90)" class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">Last 90 days</button>
+        </div>
+        <div class="lg:col-span-2 flex items-center">
+            {% if q or worksite or status or modality or doctor or date_from or date_to %}
             <a href="/transcriptions/" class="text-sm text-gray-500 hover:text-gray-700">Clear filters</a>
             {% endif %}
         </div>
     </div>
+    <input type="hidden" name="site" value="{{ site }}">
 </form>
+
+<script>
+function setDateRange(days) {
+    var today = new Date();
+    var toDate = today.toISOString().split('T')[0];
+    var fromDate;
+    if (days === 0) {
+        fromDate = toDate;
+    } else if (days === 1) {
+        var yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        fromDate = yesterday.toISOString().split('T')[0];
+        toDate = fromDate;
+    } else {
+        var past = new Date(today);
+        past.setDate(past.getDate() - days);
+        fromDate = past.toISOString().split('T')[0];
+    }
+    document.getElementById('date_from').value = fromDate;
+    document.getElementById('date_to').value = toDate;
+    document.getElementById('filter-form').submit();
+}
+</script>
 
 <!-- Results table -->
 <div class="bg-white rounded-lg shadow overflow-hidden">
@@ -71,7 +107,7 @@
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
-                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Site</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Worksite</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Accession</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Patient</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">UR</th>
@@ -85,10 +121,7 @@
             <tbody class="bg-white divide-y divide-gray-200">
                 {% for t in items %}
                 <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/transcriptions/{{ t.id }}'">
-                    <td class="px-4 py-3 text-xs">
-                        {% set site_colors = {'visage': 'bg-blue-100 text-blue-700', 'karisma': 'bg-purple-100 text-purple-700'} %}
-                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ site_colors.get(t.site_id, 'bg-gray-100 text-gray-700') }}">{{ t.site_id }}</span>
-                    </td>
+                    <td class="px-4 py-3 text-xs text-gray-600">{{ t.facility_name or '—' }}</td>
                     <td class="px-4 py-3 text-sm font-medium text-indigo-600">{{ t.accession_number or '—' }}</td>
                     <td class="px-4 py-3 text-sm text-gray-900">{{ t.patient_family_name or '' }}{% if t.patient_given_names %}, {{ t.patient_given_names }}{% endif %}</td>
                     <td class="px-4 py-3 text-sm text-gray-500">{{ t.patient_ur or '—' }}</td>
@@ -124,11 +157,11 @@
         </div>
         <div class="flex space-x-2">
             {% if page > 1 %}
-            <a href="?q={{ q }}&site={{ site }}&status={{ status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}&page={{ page - 1 }}"
+            <a href="?q={{ q }}&site={{ site }}&worksite={{ worksite }}&status={{ status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}&page={{ page - 1 }}"
                class="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:bg-gray-100">Previous</a>
             {% endif %}
             {% if page < total_pages %}
-            <a href="?q={{ q }}&site={{ site }}&status={{ status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}&page={{ page + 1 }}"
+            <a href="?q={{ q }}&site={{ site }}&worksite={{ worksite }}&status={{ status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}&page={{ page + 1 }}"
                class="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:bg-gray-100">Next</a>
             {% endif %}
         </div>

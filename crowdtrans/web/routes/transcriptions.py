@@ -1,7 +1,7 @@
 """Transcription browse/search/detail routes."""
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
@@ -18,6 +18,7 @@ def list_transcriptions(
     request: Request,
     q: str = Query("", description="Search query"),
     site: str = Query("", description="Filter by site"),
+    worksite: str = Query("", description="Filter by worksite"),
     status: str = Query("", description="Filter by status"),
     modality: str = Query("", description="Filter by modality code"),
     doctor: str = Query("", description="Filter by doctor family name"),
@@ -30,6 +31,8 @@ def list_transcriptions(
 
         if site:
             query = query.filter(Transcription.site_id == site)
+        if worksite:
+            query = query.filter(Transcription.facility_name == worksite)
 
         if q:
             like = f"%{q}%"
@@ -49,7 +52,7 @@ def list_transcriptions(
         if modality:
             query = query.filter(Transcription.modality_code == modality)
         if doctor:
-            query = query.filter(Transcription.doctor_family_name.ilike(f"%{doctor}%"))
+            query = query.filter(Transcription.doctor_family_name == doctor)
         if date_from:
             query = query.filter(Transcription.dictation_date >= date_from)
         if date_to:
@@ -80,6 +83,20 @@ def list_transcriptions(
             .order_by(Transcription.status)
             .all()
         ]
+        worksites = [
+            r[0] for r in session.query(Transcription.facility_name)
+            .filter(Transcription.facility_name.isnot(None))
+            .distinct()
+            .order_by(Transcription.facility_name)
+            .all()
+        ]
+        doctors = [
+            r[0] for r in session.query(Transcription.doctor_family_name)
+            .filter(Transcription.doctor_family_name.isnot(None))
+            .distinct()
+            .order_by(Transcription.doctor_family_name)
+            .all()
+        ]
         site_configs = get_config_store().get_site_configs()
 
     return templates.TemplateResponse("transcriptions/list.html", {
@@ -90,6 +107,7 @@ def list_transcriptions(
         "total_pages": total_pages,
         "q": q,
         "site": site,
+        "worksite": worksite,
         "status": status,
         "modality": modality,
         "doctor": doctor,
@@ -97,6 +115,8 @@ def list_transcriptions(
         "date_to": date_to,
         "modalities": modalities,
         "statuses": statuses,
+        "worksites": worksites,
+        "doctors": doctors,
         "site_configs": site_configs,
     })
 
