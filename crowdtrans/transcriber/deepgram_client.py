@@ -6,7 +6,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from deepgram import DeepgramClient, FileSource, PrerecordedOptions
+from deepgram import DeepgramClient, PrerecordedOptions
+
+# FileSource was removed in deepgram-sdk v6; it's just a TypedDict
+FileSource = dict
 
 from crowdtrans.config import settings
 from crowdtrans.config_store import get_config_store
