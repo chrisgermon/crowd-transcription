@@ -191,10 +191,16 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
         doc_given = doc_parts[0] if len(doc_parts) > 1 else ""
         doc_family = doc_parts[-1]
 
-        # Karisma ModalityName is the full name (e.g. "Ultrasound", "CT")
-        # Map common names to standard codes for keyterm matching
-        modality_name = row.get("ModalityName") or ""
-        modality_code = _karisma_modality_to_code(modality_name)
+        # Use Service Department for modality (more specific than Modality table)
+        # Falls back to ModalityName if department not available
+        dept_code = row.get("DepartmentCode") or ""
+        dept_name = row.get("DepartmentName") or ""
+        if dept_code:
+            modality_code = dept_code
+            modality_name = dept_name
+        else:
+            modality_name = row.get("ModalityName") or ""
+            modality_code = _karisma_modality_to_code(modality_name)
 
         t = Transcription(
             site_id=site.site_id,

@@ -37,6 +37,8 @@ SELECT
     SD.[Name] AS ServiceName,
     SD.Code AS ServiceCode,
     SM.[Name] AS ModalityName,
+    SDEPT.[Name] AS DepartmentName,
+    SDEPT.Code AS DepartmentCode,
 
     WS.[Key] AS WorkSiteKey,
     WS.[Name] AS WorkSiteName,
@@ -64,6 +66,8 @@ LEFT JOIN [Version].[Karisma.Service.Definition] SD
     ON RS.PerformedServiceDefinitionKey = SD.[Key]
 LEFT JOIN [Version].[Karisma.Service.Modality] SM
     ON SD.ServiceModalityKey = SM.[Key]
+LEFT JOIN [Version].[Karisma.Service.Department] SDEPT
+    ON SD.ServiceDepartmentKey = SDEPT.[Key]
 LEFT JOIN [Version].[Karisma.Practitioner.Record] PRAC
     ON DI.ActorKey = PRAC.[Key]
 LEFT JOIN [Version].[Karisma.Practitioner.Assignment] PA
