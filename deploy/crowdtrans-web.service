@@ -19,7 +19,6 @@ SyslogIdentifier=crowdtrans-web
 
 # Security
 NoNewPrivileges=yes
-ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/opt/crowdtrans/data
 

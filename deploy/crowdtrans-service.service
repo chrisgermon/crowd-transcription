@@ -20,10 +20,8 @@ SyslogIdentifier=crowdtrans-service
 
 # Security
 NoNewPrivileges=yes
-ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/opt/crowdtrans/data
-ReadOnlyPaths=/mnt/visage-audio
 
 [Install]
 WantedBy=multi-user.target
