@@ -190,14 +190,7 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             skipped_sites += 1
             continue
 
-        # Parse dictating practitioner name into parts
-        doc_name = row.get("DictatingPractitionerName") or ""
-        doc_parts = doc_name.rsplit(" ", 1) if doc_name else ["", ""]
-        doc_given = doc_parts[0] if len(doc_parts) > 1 else ""
-        doc_family = doc_parts[-1]
-
-        # Use Service Department for modality (more specific than Modality table)
-        # Falls back to ModalityName if department not available
+        # Modality — use Department if available, fall back to Modality table
         dept_code = row.get("DepartmentCode") or ""
         dept_name = row.get("DepartmentName") or ""
         if dept_code:
@@ -205,10 +198,12 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             modality_name = dept_name
         else:
             modality_name = row.get("ModalityName") or ""
-            modality_code = _karisma_modality_to_code(modality_name)
+            modality_code = row.get("ModalityCode") or ""
+            if not modality_code and modality_name:
+                modality_code = _karisma_modality_to_code(modality_name)
 
         # Fetch all note types if we have a request key
-        clinical_notes = row.get("ClinicalNotes")
+        clinical_notes = None
         worksheet_notes = None
         order_notes = None
         request_key = row.get("RequestKey")
@@ -236,9 +231,9 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             site_id=site.site_id,
             source_dictation_id=tk,
             audio_basename=None,
-            extent_key=row.get("ExtentKey"),
-            extent_offset=row.get("ExtentOffset"),
-            extent_length=row.get("ExtentLength"),
+            extent_key=row.get("ContentKey"),
+            extent_offset=None,
+            extent_length=None,
             patient_id=str(row["PatientKey"]) if row.get("PatientKey") else None,
             patient_ur=row.get("PatientId"),
             patient_title=row.get("PatientTitle"),
@@ -247,7 +242,7 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             patient_dob=str(row["PatientDateOfBirth"]) if row.get("PatientDateOfBirth") else None,
             patient_conditions=patient_conditions_json,
             order_id=str(row["RequestKey"]) if row.get("RequestKey") else None,
-            accession_number=row.get("AccessionNumber"),
+            accession_number=row.get("InternalIdentifier"),
             internal_identifier=row.get("InternalIdentifier"),
             complaint=clinical_notes,
             worksheet_notes=worksheet_notes,
@@ -258,10 +253,12 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             modality_code=modality_code,
             modality_name=modality_name,
             doctor_id=row.get("DictatingPractitionerCode"),
-            doctor_given_names=doc_given,
-            doctor_family_name=doc_family,
+            doctor_title=row.get("DictatingPractitionerTitle"),
+            doctor_given_names=row.get("DictatingPractitionerFirstName"),
+            doctor_family_name=row.get("DictatingPractitionerSurname"),
             referrer_id=str(row["ReferringPractitionerKey"]) if row.get("ReferringPractitionerKey") else None,
-            referrer_family_name=row.get("ReferringPractitionerName"),
+            referrer_given_names=row.get("ReferringPractitionerFirstName"),
+            referrer_family_name=row.get("ReferringPractitionerSurname"),
             facility_id=str(row["WorkSiteKey"]) if row.get("WorkSiteKey") else None,
             facility_name=row.get("WorkSiteName"),
             facility_code=row.get("WorkSiteCode"),

@@ -13,29 +13,27 @@ DICTATION_QUERY = """\
 SELECT
     DI.TransactionKey,
     DI.[Key] AS DictationInstanceKey,
-    DI.Status,
-    DI.CreatedTime,
-    DI.ExtentKey,
-    DI.ExtentOffset,
-    DI.ExtentLength,
+    DI.CompletionStatus,
+    DI.LastDictationCompleteDateTime AS CreatedTime,
+    DI.ContentKey,
+    DI.LengthSeconds,
 
     PR.[Key] AS PatientKey,
-    PR.Identifier AS PatientId,
-    PR.Title AS PatientTitle,
-    PR.FirstName AS PatientFirstName,
-    PR.Surname AS PatientLastName,
-    PR.DateOfBirth AS PatientDateOfBirth,
+    PN.Title AS PatientTitle,
+    PN.FirstName AS PatientFirstName,
+    PN.Surname AS PatientLastName,
+    PR.BirthDate AS PatientDateOfBirth,
+    PTID.Value AS PatientId,
 
     RR.[Key] AS RequestKey,
-    RR.Identifier AS AccessionNumber,
     RR.InternalIdentifier,
-    RR.RequestedTime,
-    RR.EarliestPerformedStartTime AS PerformedStartTime,
-    RR.ClinicalNotes,
+    RR.ExternalIdentifier,
+    RR.RequestedDate,
 
     RS.[Key] AS ServiceKey,
     SD.[Name] AS ServiceName,
     SD.Code AS ServiceCode,
+    SM.Code AS ModalityCode,
     SM.[Name] AS ModalityName,
     SDEPT.[Name] AS DepartmentName,
     SDEPT.Code AS DepartmentCode,
@@ -44,46 +42,84 @@ SELECT
     WS.[Name] AS WorkSiteName,
     WS.Code AS WorkSiteCode,
 
-    PRAC.FullName AS DictatingPractitionerName,
+    PRAC.Title AS DictatingPractitionerTitle,
+    PRAC.FirstName AS DictatingPractitionerFirstName,
+    PRAC.Surname AS DictatingPractitionerSurname,
     PRAC.Code AS DictatingPractitionerCode,
 
     REFPRAC.[Key] AS ReferringPractitionerKey,
-    REFPRAC.FullName AS ReferringPractitionerName
+    REFPRAC.FirstName AS ReferringPractitionerFirstName,
+    REFPRAC.Surname AS ReferringPractitionerSurname,
+
+    RI.[Key] AS ReportInstanceKey,
+    RI.ClinicalAvailability,
+    RI.ProcessStatus AS ReportProcessStatus
 
 FROM [Version].[Karisma.Dictation.Instance] DI
 
-LEFT JOIN [Version].[Karisma.Dictation.Record] DR
-    ON DI.RecordKey = DR.[Key]
-LEFT JOIN [Version].[Karisma.Request.Service] RS
-    ON DR.ServiceKey = RS.[Key]
+LEFT JOIN [Version].[Karisma.Dictation.Instance-ReportInstanceChange] DIRIC
+    ON DIRIC.ParentKey = DI.[Key] AND DIRIC.DeletedTransactionKey IS NULL
+LEFT JOIN [Version].[Karisma.Report.InstanceChange] RIC
+    ON DIRIC.ChildKey = RIC.[Key]
+LEFT JOIN [Version].[Karisma.Report.Instance] RI
+    ON RIC.ReportInstanceKey = RI.[Key] AND RI.IsDiscarded = 0
+
 LEFT JOIN [Version].[Karisma.Request.Record] RR
-    ON RS.RequestKey = RR.[Key]
-LEFT JOIN [Version].[Karisma.Patient.Record] PR
-    ON RR.PatientKey = PR.[Key]
-LEFT JOIN [Version].[Karisma.WorkSite.Record] WS
-    ON RR.WorkSiteKey = WS.[Key]
+    ON RI.RequestRecordKey = RR.[Key]
+
+LEFT JOIN [Version].[Karisma.Request.Service] RS
+    ON RS.RequestRecordKey = RR.[Key]
+    AND RS.ReportInstanceKey = RI.[Key]
+    AND RS.IsDiscarded = 0
+
 LEFT JOIN [Version].[Karisma.Service.Definition] SD
     ON RS.PerformedServiceDefinitionKey = SD.[Key]
 LEFT JOIN [Version].[Karisma.Service.Modality] SM
     ON SD.ServiceModalityKey = SM.[Key]
 LEFT JOIN [Version].[Karisma.Service.Department] SDEPT
     ON SD.ServiceDepartmentKey = SDEPT.[Key]
-LEFT JOIN [Version].[Karisma.Practitioner.Record] PRAC
-    ON DI.ActorKey = PRAC.[Key]
+
+LEFT JOIN [Version].[Karisma.Patient.Record] PR
+    ON RR.PatientKey = PR.[Key]
+LEFT JOIN [Version].[Karisma.Patient.Name] PN
+    ON PN.[Key] = PR.PreferredNameKey
+
+OUTER APPLY (
+    SELECT TOP 1 PI.Value
+    FROM [Version].[Karisma.Patient.Identifier] PI
+    WHERE PI.PatientRecordKey = PR.[Key]
+      AND PI.Preferred = 1
+      AND PI.IsDiscarded = 0
+      AND PI.Key_Deleted = 0
+    ORDER BY PI.TransactionKey DESC
+) PTID
+
+LEFT JOIN [Version].[Karisma.Work.Site] WS
+    ON RR.WorkSiteKey = WS.[Key]
+
+OUTER APPLY (
+    SELECT TOP 1 P.Code, P.Title, P.FirstName, P.Surname
+    FROM [Version].[Karisma.Practitioner.Record] P
+    WHERE P.AssociatedUserKey = DI.DictatorKey
+      AND P.Key_Deleted = 0
+    ORDER BY P.TransactionKey DESC
+) PRAC
+
 LEFT JOIN [Version].[Karisma.Practitioner.Assignment] PA
     ON RR.RequestingPractitionerAssignmentKey = PA.[Key]
 LEFT JOIN [Version].[Karisma.Practitioner.Record] REFPRAC
     ON PA.PractitionerRecordKey = REFPRAC.[Key]
 
 WHERE DI.TransactionKey > %d
-  AND DI.ExtentKey IS NOT NULL
-  AND DI.ExtentLength > 0
+  AND DI.Key_Deleted = 0
+  AND DI.Key_Owner = 0
+  AND DI.ContentKey IS NOT NULL
 
 ORDER BY DI.TransactionKey ASC
 """
 
 FETCH_AUDIO_BLOB_QUERY = """\
-SELECT Data
+SELECT Buffer
 FROM [System].[Extent]
 WHERE [Key] = %d
 """
