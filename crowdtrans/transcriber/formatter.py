@@ -137,6 +137,35 @@ def _doctor_uses_conclusion(doctor_id: str | None, modality_code: str | None) ->
     return conclusion_pct >= 30.0
 
 
+def _get_doctor_heading_styles(
+    doctor_id: str | None, modality_code: str | None
+) -> dict[str, str] | None:
+    """Get per-doctor heading text preferences for a modality.
+
+    Returns a dict mapping canonical heading names to the exact text the doctor
+    prefers (e.g. {"CLINICAL HISTORY": "Clinical Details:", "CONCLUSION": "COMMENT:"}),
+    or None if no heading style overrides are available.
+    """
+    mod_data = _get_doctor_mod_data(doctor_id, modality_code)
+    if not mod_data:
+        return None
+    return mod_data.get("heading_styles") or None
+
+
+def _get_doctor_footer_template(doctor_id: str | None) -> str | None:
+    """Get per-doctor footer/sign-off template from their profile.
+
+    Returns a template string or None if no footer template is available.
+    """
+    if not doctor_id:
+        return None
+    profiles = _load_doctor_profiles()
+    profile = profiles.get(str(doctor_id))
+    if not profile:
+        return None
+    return profile.get("footer_template") or None
+
+
 # Word corrections that are noise (common function words, not real corrections)
 _CORRECTION_STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "in", "at", "of", "for",
@@ -175,6 +204,13 @@ def _get_doctor_word_corrections(doctor_id: str | None, modality_code: str | Non
         result.append((pattern, right))
     return result
 
+
+_DEFAULT_HEADING_STYLES = {
+    "CLINICAL HISTORY": "Clinical History:",
+    "PROCEDURE": "Technique:",
+    "FINDINGS": "Findings:",
+    "CONCLUSION": "CONCLUSION:",
+}
 
 _MODALITY_HEADINGS = {
     "CR": ["CLINICAL HISTORY", "FINDINGS", "CONCLUSION"],
@@ -885,6 +921,58 @@ def apply_spoken_commands(text: str) -> str:
     return text.strip()
 
 
+# ---------------------------------------------------------------------------
+# Custom user-defined corrections (loaded from data/custom_corrections.json)
+# ---------------------------------------------------------------------------
+
+_CUSTOM_CORRECTIONS: list[tuple[re.Pattern, str]] | None = None
+_CUSTOM_CORRECTIONS_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "custom_corrections.json"
+_CUSTOM_CORRECTIONS_PATH_ALT = Path("/opt/crowdtrans/data/custom_corrections.json")
+
+
+def _load_custom_corrections() -> list[tuple[re.Pattern, str]]:
+    """Load user-defined word corrections from JSON. Cached after first load."""
+    global _CUSTOM_CORRECTIONS
+    if _CUSTOM_CORRECTIONS is not None:
+        return _CUSTOM_CORRECTIONS
+    _CUSTOM_CORRECTIONS = []
+    for path in (_CUSTOM_CORRECTIONS_PATH, _CUSTOM_CORRECTIONS_PATH_ALT):
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                for item in data.get("corrections", []):
+                    find = item.get("find", "")
+                    replace = item.get("replace", "")
+                    case_sensitive = item.get("case_sensitive", False)
+                    if not find or find == replace:
+                        continue
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    pattern = re.compile(r'\b' + re.escape(find) + r'\b', flags)
+                    _CUSTOM_CORRECTIONS.append((pattern, replace))
+                # Filler removals — words/phrases to strip entirely
+                for item in data.get("filler_removals", []):
+                    phrase = item.get("phrase", "") if isinstance(item, dict) else item
+                    if not phrase:
+                        continue
+                    pattern = re.compile(
+                        r'\.?\s*\b' + re.escape(phrase) + r'\b\.?\s*',
+                        re.IGNORECASE,
+                    )
+                    _CUSTOM_CORRECTIONS.append((pattern, '. '))
+                logger.info("Loaded %d custom corrections from %s", len(_CUSTOM_CORRECTIONS), path)
+                break
+            except Exception as e:
+                logger.warning("Failed to load custom corrections from %s: %s", path, e)
+    return _CUSTOM_CORRECTIONS
+
+
+def reload_custom_corrections():
+    """Force reload of custom corrections (called after edits via the UI)."""
+    global _CUSTOM_CORRECTIONS
+    _CUSTOM_CORRECTIONS = None
+    _load_custom_corrections()
+
+
 def apply_medical_corrections(text: str) -> str:
     """Apply medical term corrections learned from transcript-report comparison."""
     for pattern, replacement in _MEDICAL_CORRECTIONS:
@@ -897,6 +985,9 @@ def apply_medical_corrections(text: str) -> str:
             text = pattern.sub(replacement, text)
         else:
             text = pattern.sub(replacement, text)
+    # Apply user-defined custom corrections
+    for pattern, replacement in _load_custom_corrections():
+        text = pattern.sub(replacement, text)
     return text.strip()
 
 
@@ -1011,20 +1102,25 @@ def add_section_headings(
     )
     # Per-doctor heading renames (e.g. Dr. Ng uses "REPORT" instead of "FINDINGS")
     heading_map = _get_doctor_heading_map(doctor_id, modality_code)
+    # Per-doctor heading styles (e.g. "Clinical Details:" instead of "CLINICAL HISTORY")
+    heading_styles = _get_doctor_heading_styles(doctor_id, modality_code)
 
     lines = []
 
     # Add procedure title
     if procedure_description:
         lines.append(procedure_description.upper())
-        lines.append("")
 
     # If clinical history was provided from the order/referral, add it
     if clinical_history:
-        lines.append("CLINICAL HISTORY")
-        lines.append("")
+        # Use doctor-preferred heading style if available
+        ch_heading = (
+            (heading_styles or {}).get("CLINICAL HISTORY")
+            or (heading_map or {}).get("CLINICAL HISTORY")
+            or _DEFAULT_HEADING_STYLES.get("CLINICAL HISTORY", "Clinical History:")
+        )
+        lines.append(ch_heading)
         lines.append(clinical_history.strip())
-        lines.append("")
 
     # Strip procedure description from transcript body to prevent duplication.
     # Dictators commonly start with "Ultrasound of the left shoulder. The findings
@@ -1090,7 +1186,9 @@ def add_section_headings(
             s == "CONCLUSION" for s, _ in classified
         )
 
-    # Build output with headings, only inserting a heading when the section changes
+    # Build output with headings, only inserting a heading when the section changes.
+    # Match RIS report formatting: headings on their own line, content immediately
+    # follows on the next line, no blank lines between heading and content.
     current_section = None
     # Skip CLINICAL HISTORY heading if it was already added from the referral
     already_added_clinical = bool(clinical_history)
@@ -1113,17 +1211,21 @@ def add_section_headings(
                 # Don't repeat clinical history heading
                 pass
             else:
-                # Apply per-doctor heading renames
-                display_heading = heading_map.get(section, section) if heading_map else section
+                # Apply per-doctor heading styles first, then heading renames as fallback
+                if heading_styles and section in heading_styles:
+                    display_heading = heading_styles[section]
+                elif heading_map and section in heading_map:
+                    display_heading = heading_map[section]
+                else:
+                    # Default heading style: "Findings:" format (matches most RIS reports)
+                    display_heading = _DEFAULT_HEADING_STYLES.get(section, section)
                 lines.append(display_heading)
-                lines.append("")
             current_section = section
 
         # Ensure paragraph starts with a capital letter
         if para and para[0].islower():
             para = para[0].upper() + para[1:]
         lines.append(para)
-        lines.append("")
 
     return "\n".join(lines).strip()
 
@@ -1183,6 +1285,8 @@ def format_transcript(
     # Clean up orphaned periods and double spaces
     text = re.sub(r'\.\s+\.', '.', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
+    # Collapse blank lines after headings ending with ":" to match RIS report spacing
+    text = re.sub(r'(:\n)\n+', r'\1', text)
     return text
 
 

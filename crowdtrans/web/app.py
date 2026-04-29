@@ -27,6 +27,20 @@ def _get_ris_name() -> str:
 
 templates.env.globals["ris_name"] = _get_ris_name
 
+
+def _from_json(value):
+    """Jinja2 filter: parse a JSON string into a Python object."""
+    import json
+    if not value:
+        return []
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+templates.env.filters["from_json"] = _from_json
+
 # Import routes after templates is defined to avoid circular import
 from crowdtrans.web.routes import api, compare, dashboard, learning, settings, transcriptions  # noqa: E402
 

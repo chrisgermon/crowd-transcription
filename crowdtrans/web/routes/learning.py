@@ -99,3 +99,14 @@ def trigger_learning(background_tasks: BackgroundTasks):
     """Trigger the learning pipeline as a background task."""
     background_tasks.add_task(_run_learning_task)
     return JSONResponse({"status": "started", "message": "Learning pipeline started in background"})
+
+
+@router.post("/sync-dictionary")
+def sync_dictionary():
+    """Import medical dictionary from Karisma for Deepgram keyterm boosting."""
+    try:
+        from crowdtrans.transcriber.keyterms import sync_karisma_dictionary
+        count = sync_karisma_dictionary()
+        return JSONResponse({"status": "ok", "terms_imported": count})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)

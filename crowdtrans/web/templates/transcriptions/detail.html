@@ -100,6 +100,14 @@
                     </a>
                     {% endif %}
                     {% if txn.transcript_text %}
+                    <button onclick="toggleAdditions()" id="additions-btn"
+                            class="inline-flex items-center px-3 py-1.5 border border-amber-300 rounded-md text-sm font-medium text-amber-700 bg-white hover:bg-amber-50"
+                            title="Show what the formatter added vs what was dictated">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Additions
+                    </button>
                     <button onclick="copyReport()" id="copy-btn"
                             class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
                         <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -123,6 +131,11 @@
                 {% else %}
                 <div id="report-formatted" class="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap leading-relaxed">{{ txn.transcript_text }}</div>
                 {% endif %}
+                <!-- Formatting additions panel -->
+                <div id="additions-panel" class="hidden mt-4 border border-amber-200 rounded-lg bg-amber-50 p-4">
+                    <h3 class="text-sm font-semibold text-amber-800 mb-2">Content added by formatter (not in dictation)</h3>
+                    <div id="additions-list" class="space-y-2"></div>
+                </div>
                 {% elif txn.status == 'failed' %}
                 <div class="text-red-600 text-sm">
                     <p class="font-medium">Transcription failed</p>
@@ -165,6 +178,16 @@
                     <dt class="text-gray-400">DOB</dt>
                     <dd class="font-medium text-gray-900">{{ txn.patient_dob or '—' }}</dd>
                 </div>
+                {% if txn.patient_conditions %}
+                <div>
+                    <dt class="text-gray-400">Conditions</dt>
+                    <dd class="font-medium text-gray-900">
+                        {% for cond in txn.patient_conditions | from_json %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 mr-1 mb-1">{{ cond }}</span>
+                        {% endfor %}
+                    </dd>
+                </div>
+                {% endif %}
             </dl>
         </div>
 
@@ -198,6 +221,18 @@
                 <div>
                     <dt class="text-gray-400">Clinical Notes</dt>
                     <dd class="font-medium text-gray-900">{{ txn.complaint }}</dd>
+                </div>
+                {% endif %}
+                {% if txn.worksheet_notes %}
+                <div>
+                    <dt class="text-gray-400">Worksheet Notes</dt>
+                    <dd class="font-medium text-gray-600 text-xs">{{ txn.worksheet_notes }}</dd>
+                </div>
+                {% endif %}
+                {% if txn.order_notes %}
+                <div>
+                    <dt class="text-gray-400">Order Notes</dt>
+                    <dd class="font-medium text-gray-600 text-xs">{{ txn.order_notes }}</dd>
                 </div>
                 {% endif %}
                 <div>
@@ -279,4 +314,63 @@
         {% endif %}
     </div>
 </div>
+
+<script>
+var _additionsLoaded = false;
+
+function toggleAdditions() {
+    var panel = document.getElementById('additions-panel');
+    if (!panel) return;
+    var isHidden = panel.classList.contains('hidden');
+    if (isHidden) {
+        panel.classList.remove('hidden');
+        if (!_additionsLoaded) {
+            _additionsLoaded = true;
+            fetch('/api/formatting-additions/{{ txn.id }}')
+                .then(function(r) { return r.json(); })
+                .then(function(data) { renderAdditions(data.additions || []); })
+                .catch(function() {
+                    document.getElementById('additions-list').innerHTML =
+                        '<p class="text-sm text-red-600">Failed to load additions.</p>';
+                });
+        }
+    } else {
+        panel.classList.add('hidden');
+    }
+}
+
+function renderAdditions(additions) {
+    var list = document.getElementById('additions-list');
+    if (!additions.length) {
+        list.innerHTML = '<p class="text-sm text-amber-700">No additions detected — the formatted output matches the dictation content.</p>';
+        return;
+    }
+
+    var typeLabels = {
+        'procedure_title': { label: 'Procedure Title', color: 'bg-blue-100 text-blue-700' },
+        'heading': { label: 'Section Heading', color: 'bg-indigo-100 text-indigo-700' },
+        'clinical_history': { label: 'Clinical History', color: 'bg-green-100 text-green-700' },
+        'footer': { label: 'Footer', color: 'bg-gray-100 text-gray-700' },
+    };
+
+    var html = '';
+    additions.forEach(function(a) {
+        var info = typeLabels[a.type] || { label: a.type, color: 'bg-gray-100 text-gray-700' };
+        html += '<div class="flex items-start space-x-3">'
+            + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + info.color + ' flex-shrink-0 mt-0.5">' + info.label + '</span>'
+            + '<div>'
+            + '<span class="text-sm font-mono text-gray-800">' + escapeHtml(a.text) + '</span>'
+            + '<span class="text-xs text-gray-400 ml-2">(' + escapeHtml(a.source) + ')</span>'
+            + '</div>'
+            + '</div>';
+    });
+    list.innerHTML = html;
+}
+
+function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+</script>
 {% endblock %}

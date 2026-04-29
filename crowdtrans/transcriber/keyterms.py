@@ -4,6 +4,87 @@ Terms ranked by frequency from analysis of 15,000+ Visage reports.
 High-frequency terms get priority within Deepgram's 100-keyterm limit.
 """
 
+import json
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_CUSTOM_KEYTERMS: list[str] | None = None
+_CUSTOM_KEYTERMS_PATHS = [
+    Path(__file__).resolve().parent.parent.parent / "data" / "custom_corrections.json",
+    Path("/opt/crowdtrans/data/custom_corrections.json"),
+]
+
+
+_KARISMA_DICT: list[str] | None = None
+_KARISMA_DICT_PATHS = [
+    Path(__file__).resolve().parent.parent.parent / "data" / "karisma_dictionary.json",
+    Path("/opt/crowdtrans/data/karisma_dictionary.json"),
+]
+
+
+def _load_karisma_dictionary() -> list[str]:
+    """Load Karisma medical dictionary words (cached). Used as additional keyterm pool."""
+    global _KARISMA_DICT
+    if _KARISMA_DICT is not None:
+        return _KARISMA_DICT
+    _KARISMA_DICT = []
+    for path in _KARISMA_DICT_PATHS:
+        if path.exists():
+            try:
+                _KARISMA_DICT = json.loads(path.read_text(encoding="utf-8"))
+                logger.info("Loaded %d Karisma dictionary terms from %s", len(_KARISMA_DICT), path)
+                break
+            except Exception:
+                pass
+    return _KARISMA_DICT
+
+
+def sync_karisma_dictionary():
+    """Fetch medical dictionary from Karisma and save locally for keyterm use."""
+    from crowdtrans.config_store import get_config_store
+    store = get_config_store()
+    sites = store.get_enabled_site_configs()
+    karisma_sites = [s for s in sites if s.ris_type == "karisma"]
+    if not karisma_sites:
+        logger.warning("No Karisma site configured — cannot sync dictionary")
+        return 0
+
+    from crowdtrans.karisma import fetch_medical_dictionary
+    words = fetch_medical_dictionary(karisma_sites[0])
+    if not words:
+        return 0
+
+    # Save to local file
+    out_path = _KARISMA_DICT_PATHS[0]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(words, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Synced %d Karisma dictionary terms to %s", len(words), out_path)
+
+    # Reset cache
+    global _KARISMA_DICT
+    _KARISMA_DICT = None
+    return len(words)
+
+
+def _load_custom_keyterms() -> list[str]:
+    """Load user-defined keyterms from custom_corrections.json. Cached."""
+    global _CUSTOM_KEYTERMS
+    if _CUSTOM_KEYTERMS is not None:
+        return _CUSTOM_KEYTERMS
+    _CUSTOM_KEYTERMS = []
+    for path in _CUSTOM_KEYTERMS_PATHS:
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                _CUSTOM_KEYTERMS = data.get("keyterms", [])
+                break
+            except Exception:
+                pass
+    return _CUSTOM_KEYTERMS
+
+
 # Always included regardless of modality
 BASE_TERMS = [
     "radiology", "radiologist", "impression", "findings", "conclusion",
@@ -168,6 +249,20 @@ def get_keyterms(
                 context_terms.append(word)
 
     terms.extend(context_terms)
+
+    # Add user-defined custom keyterms
+    terms.extend(_load_custom_keyterms())
+
+    # Add relevant terms from Karisma medical dictionary
+    # Filter by procedure description words to stay within the 100-term cap
+    karisma_dict = _load_karisma_dictionary()
+    if karisma_dict and procedure_description:
+        proc_words = {w.lower() for w in procedure_description.split() if len(w) > 3}
+        for term in karisma_dict:
+            term_lower = term.lower()
+            # Include dictionary terms that share a root with procedure words
+            if any(pw in term_lower or term_lower in pw for pw in proc_words):
+                terms.append(term)
 
     # Deduplicate while preserving order, cap at 100
     seen = set()

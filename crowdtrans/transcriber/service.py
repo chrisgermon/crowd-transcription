@@ -156,7 +156,12 @@ def _get_excluded_worksites() -> set[str]:
 
 
 def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
-    from crowdtrans.karisma import fetch_new_dictations
+    import json as _json
+    from crowdtrans.karisma import (
+        fetch_all_request_notes,
+        fetch_new_dictations,
+        fetch_patient_conditions,
+    )
 
     rows = fetch_new_dictations(site, wm.last_dictation_id, site.batch_size)
     if not rows:
@@ -202,6 +207,31 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             modality_name = row.get("ModalityName") or ""
             modality_code = _karisma_modality_to_code(modality_name)
 
+        # Fetch all note types if we have a request key
+        clinical_notes = row.get("ClinicalNotes")
+        worksheet_notes = None
+        order_notes = None
+        request_key = row.get("RequestKey")
+        if request_key:
+            try:
+                all_notes = fetch_all_request_notes(site, request_key)
+                clinical_notes = all_notes.get("clinical") or clinical_notes
+                worksheet_notes = all_notes.get("worksheet")
+                order_notes = all_notes.get("order")
+            except Exception:
+                logger.debug("Could not fetch notes for request %s", request_key)
+
+        # Fetch patient conditions
+        patient_conditions_json = None
+        patient_key = row.get("PatientKey")
+        if patient_key:
+            try:
+                conditions = fetch_patient_conditions(site, patient_key)
+                if conditions:
+                    patient_conditions_json = _json.dumps(conditions)
+            except Exception:
+                logger.debug("Could not fetch conditions for patient %s", patient_key)
+
         t = Transcription(
             site_id=site.site_id,
             source_dictation_id=tk,
@@ -215,10 +245,13 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             patient_given_names=row.get("PatientFirstName"),
             patient_family_name=row.get("PatientLastName"),
             patient_dob=str(row["PatientDateOfBirth"]) if row.get("PatientDateOfBirth") else None,
+            patient_conditions=patient_conditions_json,
             order_id=str(row["RequestKey"]) if row.get("RequestKey") else None,
             accession_number=row.get("AccessionNumber"),
             internal_identifier=row.get("InternalIdentifier"),
-            complaint=row.get("ClinicalNotes"),
+            complaint=clinical_notes,
+            worksheet_notes=worksheet_notes,
+            order_notes=order_notes,
             procedure_id=str(row["ServiceKey"]) if row.get("ServiceKey") else None,
             procedure_description=row.get("ServiceName"),
             service_code=row.get("ServiceCode"),
@@ -394,6 +427,89 @@ def _store_result(session, site: SiteConfig, txn: Transcription, result):
 
 
 # ---------------------------------------------------------------------------
+# Patient data backfill
+# ---------------------------------------------------------------------------
+_last_backfill = 0.0
+_BACKFILL_INTERVAL = 600  # 10 minutes
+
+
+def _backfill_patient_data(session, site: SiteConfig):
+    """Backfill patient/request data for Karisma dictations that were
+    discovered before their Report link existed in the database."""
+    import time
+    global _last_backfill
+
+    now = time.time()
+    if now - _last_backfill < _BACKFILL_INTERVAL:
+        return
+    _last_backfill = now
+
+    if site.ris_type != "karisma":
+        return
+
+    from crowdtrans.karisma import fetch_all_request_notes
+
+    # Find transcriptions missing clinical notes (notes weren't available at discovery)
+    missing = (
+        session.query(Transcription)
+        .filter(
+            Transcription.site_id == site.site_id,
+            Transcription.complaint.is_(None),
+            Transcription.order_id.isnot(None),
+        )
+        .limit(200)
+        .all()
+    )
+    if not missing:
+        return
+
+    updated = 0
+    reformatted = 0
+    for txn in missing:
+        request_key = int(txn.order_id) if txn.order_id else None
+        if not request_key:
+            continue
+
+        try:
+            all_notes = fetch_all_request_notes(site, request_key)
+        except Exception:
+            continue
+
+        if not all_notes:
+            continue
+
+        clinical = all_notes.get("clinical")
+        if clinical:
+            txn.complaint = clinical
+        worksheet = all_notes.get("worksheet")
+        if worksheet:
+            txn.worksheet_notes = worksheet
+        order = all_notes.get("order")
+        if order:
+            txn.order_notes = order
+
+        updated += 1
+
+        # Re-format transcript with the new context data
+        if txn.transcript_text and txn.status == "complete" and clinical:
+            txn.formatted_text = format_transcript(
+                txn.transcript_text,
+                modality_code=txn.modality_code,
+                procedure_description=txn.procedure_description,
+                clinical_history=txn.complaint,
+                doctor_id=txn.doctor_id,
+            )
+            reformatted += 1
+
+    if updated:
+        session.commit()
+        logger.info(
+            "[%s] Backfill: updated %d dictations with patient data (%d re-formatted)",
+            site.site_id, updated, reformatted,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Dispatch: route to correct RIS backend
 # ---------------------------------------------------------------------------
 
@@ -486,6 +602,8 @@ def run(site_id: str | None = None):
                     processed = _process_pending(session, site)
                     if discovered > 0 or processed > 0:
                         any_work = True
+                    # Periodic backfill of patient data for dictations discovered before notes existed
+                    _backfill_patient_data(session, site)
             except Exception:
                 logger.exception("[%s] Error in polling loop", site.site_id)
 

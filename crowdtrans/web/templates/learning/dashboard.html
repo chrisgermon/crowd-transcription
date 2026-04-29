@@ -37,6 +37,66 @@
     </div>
     {% endif %}
 
+    <!-- Custom Corrections -->
+    <div class="bg-white rounded-lg shadow-sm border">
+        <div class="px-4 py-3 border-b flex items-center justify-between">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900">Custom Corrections</h2>
+                <p class="text-sm text-gray-500">User-defined word replacements and filler removals applied during formatting</p>
+            </div>
+            <button onclick="document.getElementById('add-correction-form').classList.toggle('hidden')"
+                    class="bg-indigo-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-indigo-700">
+                + Add Rule
+            </button>
+        </div>
+
+        <!-- Add form (hidden by default) -->
+        <div id="add-correction-form" class="hidden border-b bg-gray-50 px-4 py-4">
+            <div class="flex items-end space-x-3">
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Type</label>
+                    <select id="new-type" class="border border-gray-300 rounded px-2 py-1.5 text-sm" onchange="toggleFormFields()">
+                        <option value="correction">Word Correction</option>
+                        <option value="filler">Filler Removal</option>
+                        <option value="keyterm">Deepgram Keyterm</option>
+                    </select>
+                </div>
+                <div id="field-find">
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Find</label>
+                    <input id="new-find" type="text" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-48" placeholder="e.g. retrotter">
+                </div>
+                <div id="field-replace">
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Replace with</label>
+                    <input id="new-replace" type="text" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-48" placeholder="e.g. rotator">
+                </div>
+                <div id="field-phrase" class="hidden">
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Phrase to remove</label>
+                    <input id="new-phrase" type="text" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-48" placeholder="e.g. thank you">
+                </div>
+                <div id="field-term" class="hidden">
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Term</label>
+                    <input id="new-term" type="text" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-48" placeholder="e.g. supraspinatus">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Note (optional)</label>
+                    <input id="new-note" type="text" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-40" placeholder="why this rule?">
+                </div>
+                <button onclick="addCorrection()" class="bg-green-600 text-white px-4 py-1.5 rounded-md text-sm font-medium hover:bg-green-700">
+                    Add
+                </button>
+            </div>
+            <p id="add-error" class="text-red-600 text-xs mt-2 hidden"></p>
+        </div>
+
+        <!-- Corrections list -->
+        <div id="corrections-list" class="divide-y divide-gray-100">
+            <!-- Populated by JS -->
+        </div>
+        <div id="corrections-empty" class="px-4 py-6 text-center text-sm text-gray-400 hidden">
+            No custom corrections yet. Click "+ Add Rule" to create one.
+        </div>
+    </div>
+
     <!-- Doctor Profiles -->
     <div class="bg-white rounded-lg shadow-sm border">
         <div class="px-4 py-3 border-b">
@@ -144,6 +204,131 @@
 </div>
 
 <script>
+/* -- Custom corrections management -- */
+
+function toggleFormFields() {
+    var t = document.getElementById('new-type').value;
+    document.getElementById('field-find').classList.toggle('hidden', t !== 'correction');
+    document.getElementById('field-replace').classList.toggle('hidden', t !== 'correction');
+    document.getElementById('field-phrase').classList.toggle('hidden', t !== 'filler');
+    document.getElementById('field-term').classList.toggle('hidden', t !== 'keyterm');
+}
+
+function loadCorrections() {
+    fetch('/api/corrections')
+        .then(function(r) { return r.json(); })
+        .then(function(data) { renderCorrections(data); })
+        .catch(function() {});
+}
+
+function renderCorrections(data) {
+    var list = document.getElementById('corrections-list');
+    var empty = document.getElementById('corrections-empty');
+    var corrections = data.corrections || [];
+    var fillers = data.filler_removals || [];
+    var keyterms = data.keyterms || [];
+    var total = corrections.length + fillers.length + keyterms.length;
+
+    if (total === 0) {
+        list.innerHTML = '';
+        empty.classList.remove('hidden');
+        return;
+    }
+    empty.classList.add('hidden');
+
+    var html = '';
+    corrections.forEach(function(c, i) {
+        html += '<div class="px-4 py-2 flex items-center justify-between hover:bg-gray-50">'
+            + '<div class="flex items-center space-x-3">'
+            + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">correction</span>'
+            + '<span class="font-mono text-sm text-red-700">' + escHtml(c.find) + '</span>'
+            + '<span class="text-gray-400">&rarr;</span>'
+            + '<span class="font-mono text-sm text-green-700">' + escHtml(c.replace) + '</span>'
+            + (c.note ? '<span class="text-xs text-gray-400 ml-2">(' + escHtml(c.note) + ')</span>' : '')
+            + '</div>'
+            + '<button onclick="deleteCorrection(' + i + ',\'correction\')" class="text-red-400 hover:text-red-600 text-xs">remove</button>'
+            + '</div>';
+    });
+    fillers.forEach(function(f, i) {
+        var phrase = (typeof f === 'string') ? f : (f.phrase || '');
+        var note = (typeof f === 'object') ? (f.note || '') : '';
+        html += '<div class="px-4 py-2 flex items-center justify-between hover:bg-gray-50">'
+            + '<div class="flex items-center space-x-3">'
+            + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">filler</span>'
+            + '<span class="font-mono text-sm text-red-700 line-through">' + escHtml(phrase) + '</span>'
+            + '<span class="text-xs text-gray-400">(removed from output)</span>'
+            + (note ? '<span class="text-xs text-gray-400 ml-2">(' + escHtml(note) + ')</span>' : '')
+            + '</div>'
+            + '<button onclick="deleteCorrection(' + i + ',\'filler\')" class="text-red-400 hover:text-red-600 text-xs">remove</button>'
+            + '</div>';
+    });
+    keyterms.forEach(function(t, i) {
+        html += '<div class="px-4 py-2 flex items-center justify-between hover:bg-gray-50">'
+            + '<div class="flex items-center space-x-3">'
+            + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">keyterm</span>'
+            + '<span class="font-mono text-sm text-gray-800">' + escHtml(t) + '</span>'
+            + '<span class="text-xs text-gray-400">(sent to Deepgram for recognition)</span>'
+            + '</div>'
+            + '<button onclick="deleteCorrection(' + i + ',\'keyterm\')" class="text-red-400 hover:text-red-600 text-xs">remove</button>'
+            + '</div>';
+    });
+    list.innerHTML = html;
+}
+
+function escHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+function addCorrection() {
+    var ctype = document.getElementById('new-type').value;
+    var body = { type: ctype };
+    var errEl = document.getElementById('add-error');
+    errEl.classList.add('hidden');
+
+    if (ctype === 'correction') {
+        body.find = document.getElementById('new-find').value;
+        body.replace = document.getElementById('new-replace').value;
+    } else if (ctype === 'filler') {
+        body.phrase = document.getElementById('new-phrase').value;
+    } else if (ctype === 'keyterm') {
+        body.term = document.getElementById('new-term').value;
+    }
+    body.note = document.getElementById('new-note').value;
+
+    fetch('/api/corrections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+        return r.json();
+    })
+    .then(function(d) {
+        renderCorrections(d.data);
+        document.getElementById('new-find').value = '';
+        document.getElementById('new-replace').value = '';
+        document.getElementById('new-phrase').value = '';
+        document.getElementById('new-term').value = '';
+        document.getElementById('new-note').value = '';
+    })
+    .catch(function(e) {
+        errEl.textContent = e.message;
+        errEl.classList.remove('hidden');
+    });
+}
+
+function deleteCorrection(index, ctype) {
+    fetch('/api/corrections/' + index + '?ctype=' + ctype, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function() { loadCorrections(); });
+}
+
+// Load corrections on page load
+document.addEventListener('DOMContentLoaded', loadCorrections);
+
 function triggerLearning() {
     const btn = document.getElementById('run-btn');
     btn.disabled = true;

@@ -242,3 +242,294 @@ def check_connection(site: SiteConfig) -> dict[str, Any]:
             return {"status": "ok", "counts": counts}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Patient conditions (diabetic, pregnant, blood thinners, claustrophobic, etc.)
+# ---------------------------------------------------------------------------
+
+PATIENT_CONDITIONS_QUERY = """\
+SELECT CD.[Name] AS ConditionName
+FROM [Version].[Karisma.Patient.ConditionInstance] CI
+JOIN [Version].[Karisma.Patient.ConditionDefinition] CD
+    ON CI.ConditionDefinitionKey = CD.[Key]
+WHERE CI.PatientRecordKey = %d
+  AND CI.IsDiscarded = 0
+  AND CI.Key_Deleted = 0
+"""
+
+
+def fetch_patient_conditions(site: SiteConfig, patient_key: int) -> list[str]:
+    """Fetch active conditions for a patient (e.g. Diabetic, Blood Thinners, Pregnant)."""
+    if not patient_key:
+        return []
+    conn = _get_connection(site)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(PATIENT_CONDITIONS_QUERY, (patient_key,))
+            return [row["ConditionName"] for row in cur]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# All clinical note types from Request.Note
+# ---------------------------------------------------------------------------
+
+ALL_NOTES_QUERY = """\
+SELECT RN.NoteStyle, E.Buffer
+FROM [Version].[Karisma.Request.Note] RN
+JOIN [System].[Extent] E ON E.[Key] = RN.BufferKey
+WHERE RN.RequestRecordKey = %d
+  AND RN.IsDiscarded = 0
+  AND RN.Key_Deleted = 0
+ORDER BY RN.NoteStyle ASC, RN.TransactionKey DESC
+"""
+
+
+def _extract_plain_text_from_wp_xml(raw: bytes) -> str:
+    """Extract plain text from Kestral WordProcessor XML format."""
+    import re as _re
+    try:
+        try:
+            xml_text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            xml_text = raw.decode("utf-16-le")
+
+        texts = _re.findall(r"<Text[^>]*>([^<]+)</Text>", xml_text)
+        if texts:
+            parts = _re.split(r"</Paragraph>\s*<Paragraph[^>]*>", xml_text)
+            if len(parts) > 1:
+                paragraphs = []
+                for part in parts:
+                    part_texts = _re.findall(r"<Text[^>]*>([^<]+)</Text>", part)
+                    if part_texts:
+                        paragraphs.append(" ".join(part_texts))
+                return "\n".join(p for p in paragraphs if p.strip())
+            return " ".join(texts)
+
+        plain = _re.sub(r"<[^>]+>", " ", xml_text)
+        plain = _re.sub(r"\s+", " ", plain).strip()
+        return plain
+    except Exception as e:
+        logger.warning("Failed to extract text from WP XML: %s", e)
+        return ""
+
+
+def fetch_all_request_notes(site: SiteConfig, request_key: int) -> dict[str, str]:
+    """Fetch all note types for a request.
+
+    Returns dict with keys: 'clinical', 'order', 'worksheet', 'private'.
+    NoteStyle: 0=order, 1=clinical, 2=worksheet/focus, 3=private.
+    """
+    if not request_key:
+        return {}
+    conn = _get_connection(site)
+    style_map = {0: "order", 1: "clinical", 2: "worksheet", 3: "private"}
+    try:
+        result = {}
+        with conn.cursor(as_dict=False) as cur:
+            cur.execute(ALL_NOTES_QUERY, (request_key,))
+            for row in cur:
+                style = style_map.get(row[0], "other")
+                if style in result:
+                    continue  # Keep first (most recent) per style
+                raw = bytes(row[1]) if row[1] else None
+                if raw:
+                    text = _extract_plain_text_from_wp_xml(raw)
+                    if text:
+                        result[style] = text
+        return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Prior reports for the same patient
+# ---------------------------------------------------------------------------
+
+PRIOR_REPORTS_QUERY = """\
+SELECT TOP {limit}
+    RR.InternalIdentifier AS AccessionNumber,
+    SD.[Name] AS ServiceName,
+    SD.Code AS ServiceCode,
+    SM.[Name] AS ModalityName,
+    RI.ProcessStatus,
+    RR.RequestedDate,
+    RI.[Key] AS ReportInstanceKey
+FROM [Version].[Karisma.Report.Instance] RI
+JOIN [Version].[Karisma.Request.Record] RR
+    ON RI.RequestRecordKey = RR.[Key]
+LEFT JOIN [Version].[Karisma.Request.Service] RS
+    ON RS.RequestRecordKey = RR.[Key]
+    AND RS.ReportInstanceKey = RI.[Key]
+    AND RS.IsDiscarded = 0
+LEFT JOIN [Version].[Karisma.Service.Definition] SD
+    ON RS.PerformedServiceDefinitionKey = SD.[Key]
+LEFT JOIN [Version].[Karisma.Service.Modality] SM
+    ON SD.ServiceModalityKey = SM.[Key]
+WHERE RR.PatientKey = %d
+  AND RI.IsDiscarded = 0
+  AND RI.[Key] != %d
+  AND RI.ProcessStatus > 0
+ORDER BY RR.RequestedDate DESC
+"""
+
+
+def fetch_prior_reports(
+    site: SiteConfig, patient_key: int, exclude_report_key: int = 0, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Fetch recent prior reports for the same patient."""
+    if not patient_key:
+        return []
+    conn = _get_connection(site)
+    try:
+        result = []
+        with conn.cursor() as cur:
+            query = PRIOR_REPORTS_QUERY.format(limit=limit)
+            cur.execute(query, (patient_key, exclude_report_key))
+            for row in cur:
+                result.append(dict(row))
+        return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Report templates (per-doctor, per-exam type)
+# ---------------------------------------------------------------------------
+
+REPORT_TEMPLATES_QUERY = """\
+SELECT TOP 5
+    RT.[Name] AS TemplateName,
+    RT.Code AS TemplateCode,
+    RT.Description AS TemplateDescription,
+    E.Buffer AS TemplateBuffer
+FROM [Version].[Karisma.Report.Template] RT
+JOIN [System].[Extent] E ON E.[Key] = RT.BufferKey
+JOIN [Version].[Karisma.Report.Template-ProfileUser] TPU
+    ON TPU.ChildKey = RT.[Key]
+WHERE TPU.ParentKey = %d
+  AND RT.Key_Deleted = 0
+  AND RT.[Name] LIKE %s
+ORDER BY RT.TransactionKey DESC
+"""
+
+REPORT_TEMPLATES_BY_USER_QUERY = """\
+SELECT TOP 10
+    RT.[Name] AS TemplateName,
+    RT.Code AS TemplateCode,
+    RT.Description AS TemplateDescription,
+    E.Buffer AS TemplateBuffer
+FROM [Version].[Karisma.Report.Template] RT
+JOIN [System].[Extent] E ON E.[Key] = RT.BufferKey
+JOIN [Version].[Karisma.Report.Template-ProfileUser] TPU
+    ON TPU.ChildKey = RT.[Key]
+WHERE TPU.ParentKey = %d
+  AND RT.Key_Deleted = 0
+ORDER BY RT.TransactionKey DESC
+"""
+
+
+def fetch_report_templates(
+    site: SiteConfig, dictator_user_key: int, service_name: str | None = None
+) -> list[dict[str, str]]:
+    """Fetch report templates for a doctor, optionally filtered by service name."""
+    if not dictator_user_key:
+        return []
+    conn = _get_connection(site)
+    try:
+        result = []
+        with conn.cursor(as_dict=True) as cur:
+            if service_name:
+                pattern = f"%{service_name.split()[0] if service_name else ''}%"
+                cur.execute(REPORT_TEMPLATES_QUERY, (dictator_user_key, pattern))
+            else:
+                cur.execute(REPORT_TEMPLATES_BY_USER_QUERY, (dictator_user_key,))
+            for row in cur:
+                entry = {
+                    "name": row["TemplateName"],
+                    "code": row["TemplateCode"],
+                    "description": row["TemplateDescription"],
+                }
+                raw = bytes(row["TemplateBuffer"]) if row["TemplateBuffer"] else None
+                if raw:
+                    entry["text"] = _extract_plain_text_from_wp_xml(raw)
+                else:
+                    entry["text"] = ""
+                result.append(entry)
+        return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Medical dictionary from Karisma
+# ---------------------------------------------------------------------------
+
+DICTIONARY_QUERY = """\
+SELECT DISTINCT [Word]
+FROM [Version].[Karisma.Document.Dictionary]
+WHERE Key_Deleted = 0
+  AND LEN([Word]) > 3
+ORDER BY [Word]
+"""
+
+
+def fetch_medical_dictionary(site: SiteConfig) -> list[str]:
+    """Fetch custom medical dictionary words from Karisma (for Deepgram keyterms)."""
+    conn = _get_connection(site)
+    try:
+        with conn.cursor(as_dict=False) as cur:
+            cur.execute(DICTIONARY_QUERY)
+            return [row[0] for row in cur if row[0]]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Practitioner qualifications (for footer rendering)
+# ---------------------------------------------------------------------------
+
+PRACTITIONER_DETAILS_QUERY = """\
+SELECT TOP 1
+    P.Code, P.Title, P.FirstName, P.Surname, P.Qualifications,
+    P.IsReportingProvider, P.AssociatedUserKey
+FROM [Version].[Karisma.Practitioner.Record] P
+WHERE P.Code = %s
+  AND P.Key_Deleted = 0
+ORDER BY P.TransactionKey DESC
+"""
+
+
+def fetch_practitioner_details(site: SiteConfig, practitioner_code: str) -> dict[str, Any] | None:
+    """Fetch practitioner details including qualifications."""
+    if not practitioner_code:
+        return None
+    conn = _get_connection(site)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(PRACTITIONER_DETAILS_QUERY, (practitioner_code,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_min_transaction_key_for_date(site: SiteConfig, date_str: str) -> int:
+    """Get the minimum TransactionKey for dictations on or after the given date (YYYY-MM-DD)."""
+    conn = _get_connection(site)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT ISNULL(MIN(TransactionKey), 0) AS min_tk
+                FROM [Version].[Karisma.Dictation.Instance]
+                WHERE Key_Deleted = 0
+                  AND Key_Owner = 0
+                  AND ContentKey IS NOT NULL
+                  AND CAST(LastDictationCompleteDateTime AS DATE) >= %s
+            """, (date_str,))
+            row = cur.fetchone()
+            return max(0, row["min_tk"] - 1)
+    finally:
+        conn.close()

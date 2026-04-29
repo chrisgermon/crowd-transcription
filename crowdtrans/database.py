@@ -48,6 +48,11 @@ def _migrate_add_columns(engine_):
             ("llm_format_duration_ms", "INTEGER"),
             ("llm_input_tokens", "INTEGER"),
             ("llm_output_tokens", "INTEGER"),
+            ("patient_conditions", "TEXT"),
+            ("worksheet_notes", "TEXT"),
+            ("order_notes", "TEXT"),
+            ("doctor_qualifications", "TEXT"),
+            ("doctor_user_key", "BIGINT"),
         ],
     }
 

@@ -105,11 +105,18 @@ class Transcription(Base):
     modality_name = Column(String, nullable=True)
     body_part = Column(String, nullable=True)
 
+    # Patient extended data
+    patient_conditions = Column(Text, nullable=True)  # JSON list of conditions
+    worksheet_notes = Column(Text, nullable=True)
+    order_notes = Column(Text, nullable=True)
+
     # Doctor (reporting/dictating radiologist)
     doctor_id = Column(String, nullable=True)
     doctor_title = Column(String, nullable=True)
     doctor_given_names = Column(String, nullable=True)
     doctor_family_name = Column(String, nullable=True)
+    doctor_qualifications = Column(String, nullable=True)
+    doctor_user_key = Column(BigInteger, nullable=True)
 
     # Referrer
     referrer_id = Column(String, nullable=True)
