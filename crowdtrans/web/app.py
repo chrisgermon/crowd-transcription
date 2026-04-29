@@ -42,9 +42,10 @@ def _from_json(value):
 templates.env.filters["from_json"] = _from_json
 
 # Import routes after templates is defined to avoid circular import
-from crowdtrans.web.routes import api, compare, dashboard, learning, settings, transcriptions  # noqa: E402
+from crowdtrans.web.routes import api, compare, dashboard, learning, settings, transcriptions, worklist  # noqa: E402
 
 app.include_router(dashboard.router)
+app.include_router(worklist.router)
 app.include_router(transcriptions.router)
 app.include_router(compare.router)
 app.include_router(learning.router)

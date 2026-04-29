@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}{{ txn.accession_number or 'Worklist Item' }} — CrowdScription{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex items-center space-x-4">
+    <a href="/worklist/" class="text-sm text-indigo-600 hover:text-indigo-800">&larr; Back to worklist</a>
+    <a href="/transcriptions/{{ txn.id }}" class="text-sm text-indigo-600 hover:text-indigo-800">View full detail &rarr;</a>
+    {% if txn.final_report_text %}
+    <a href="/compare/{{ txn.id }}" class="text-sm text-indigo-600 hover:text-indigo-800">Compare with Karisma &rarr;</a>
+    {% endif %}
+</div>
+
+<!-- Header with status and actions -->
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900">{{ txn.accession_number or 'No Accession' }}</h1>
+        <p class="text-sm text-gray-500 mt-1">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">{{ site_name }}</span>
+            {{ txn.procedure_description or '' }}
+            {% if txn.modality_code %}<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ txn.modality_code }}</span>{% endif %}
+            &middot; Dr {{ txn.doctor_family_name or '?' }}
+            &middot; {{ txn.dictation_date.strftime('%Y-%m-%d %H:%M') if txn.dictation_date else '—' }}
+        </p>
+    </div>
+    <div class="flex items-center space-x-3">
+        {% if txn.worklist_status == 'ready' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-700">Ready</span>
+        {% elif txn.worklist_status == 'copied' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-700">Copied</span>
+        {% elif txn.worklist_status == 'verified' %}
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-700">Verified</span>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Audio Player -->
+{% if txn.audio_file_path or (txn.audio_relative_path and txn.audio_basename) or txn.extent_key %}
+<div class="bg-white rounded-lg shadow mb-6">
+    <div class="px-5 py-3 flex items-center space-x-4">
+        <div class="flex items-center space-x-2 flex-shrink-0">
+            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/>
+            </svg>
+            <span class="text-sm font-medium text-gray-700">Dictation Audio</span>
+        </div>
+        <audio id="audio-player" controls preload="none" class="flex-1 h-10" style="min-width: 0;">
+            <source src="/api/audio/{{ txn.id }}" type="{{ txn.audio_mime_type or ('audio/wav' if txn.site_id == 'karisma' else 'audio/ogg') }}">
+        </audio>
+        <select id="playback-rate" onchange="document.getElementById('audio-player').playbackRate = parseFloat(this.value)"
+                class="text-xs border-gray-300 rounded px-2 py-1 border focus:ring-indigo-500 focus:border-indigo-500">
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+        </select>
+    </div>
+</div>
+{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Report text (2/3) -->
+    <div class="lg:col-span-2">
+        <div class="bg-white rounded-lg shadow">
+            <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Transcription</h2>
+                <div class="flex items-center space-x-2">
+                    <button onclick="copyReport()" id="copy-btn"
+                            class="inline-flex items-center px-4 py-2 border border-indigo-300 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                        </svg>
+                        <span id="copy-label">Copy Report</span>
+                    </button>
+                </div>
+            </div>
+            <div class="p-5">
+                {% if txn.formatted_text %}
+                <div id="report-text" class="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap leading-relaxed">{{ txn.formatted_text }}</div>
+                {% else %}
+                <div class="text-gray-400">No transcription available.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="mt-4 flex items-center space-x-3">
+            {% if txn.worklist_status == 'ready' %}
+            <button onclick="markCopied()" id="mark-btn"
+                    class="inline-flex items-center px-6 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                </svg>
+                Mark as Copied
+            </button>
+            {% elif txn.worklist_status == 'copied' %}
+            <button onclick="markReady()" id="undo-btn"
+                    class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                Undo — Mark as Ready
+            </button>
+            <span class="text-sm text-gray-500">Copied {{ txn.copied_at.strftime('%Y-%m-%d %H:%M') if txn.copied_at else '' }}</span>
+            {% elif txn.worklist_status == 'verified' %}
+            <span class="text-sm text-green-600 font-medium">Report verified in Karisma</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Metadata sidebar (1/3) -->
+    <div class="space-y-4">
+        <!-- Patient -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Patient</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Name</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.patient_title or '' }} {{ txn.patient_given_names or '' }} {{ txn.patient_family_name or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">UR</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.patient_ur or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">DOB</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.patient_dob or '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Study -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Study</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Accession</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.accession_number or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Procedure</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.procedure_description or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Modality</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.modality_name or txn.modality_code or '—' }}</dd>
+                </div>
+                {% if txn.complaint %}
+                <div>
+                    <dt class="text-gray-400">Clinical Notes</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.complaint }}</dd>
+                </div>
+                {% endif %}
+                <div>
+                    <dt class="text-gray-400">Dictation Date</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.dictation_date.strftime('%Y-%m-%d %H:%M') if txn.dictation_date else '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Doctor -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Reporting Doctor</h3>
+            <p class="text-sm font-medium text-gray-900">{{ txn.doctor_title or '' }} {{ txn.doctor_given_names or '' }} {{ txn.doctor_family_name or '—' }}</p>
+        </div>
+
+        <!-- Referrer -->
+        {% if txn.referrer_family_name %}
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Referrer</h3>
+            <p class="text-sm font-medium text-gray-900">{{ txn.referrer_title or '' }} {{ txn.referrer_given_names or '' }} {{ txn.referrer_family_name or '—' }}</p>
+        </div>
+        {% endif %}
+
+        <!-- Processing -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Processing</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Confidence</dt>
+                    <dd class="font-medium text-gray-900">{% if txn.confidence %}{{ "%.1f"|format(txn.confidence * 100) }}%{% else %}—{% endif %}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Transcribed At</dt>
+                    <dd class="font-medium text-gray-900">{{ txn.transcription_completed_at.strftime('%Y-%m-%d %H:%M') if txn.transcription_completed_at else '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+</div>
+
+<script>
+// copyReport() is provided by app.js (handles report-text, report-formatted, report-raw)
+
+function markCopied() {
+    var btn = document.getElementById('mark-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    fetch('/api/worklist/{{ txn.id }}/mark-copied', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function() { location.reload(); })
+        .catch(function() { if (btn) { btn.disabled = false; btn.textContent = 'Mark as Copied'; } });
+}
+
+function markReady() {
+    var btn = document.getElementById('undo-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    fetch('/api/worklist/{{ txn.id }}/mark-ready', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function() { location.reload(); })
+        .catch(function() { if (btn) { btn.disabled = false; btn.textContent = 'Undo'; } });
+}
+</script>
+{% endblock %}
