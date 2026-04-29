@@ -149,6 +149,10 @@ class Transcription(Base):
     words_json = Column(Text, nullable=True)
     paragraphs_json = Column(Text, nullable=True)
 
+    # Worklist tracking
+    worklist_status = Column(String, nullable=False, default="ready")  # ready, copied, verified
+    copied_at = Column(DateTime, nullable=True)
+
     # Timestamps
     dictation_date = Column(DateTime, nullable=True)
     discovered_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -165,6 +169,7 @@ class Transcription(Base):
         Index("ix_modality_code", "modality_code"),
         Index("ix_dictation_date", "dictation_date"),
         Index("ix_site_source", "site_id", "source_dictation_id"),
+        Index("ix_worklist_status", "worklist_status"),
     )
 
 
