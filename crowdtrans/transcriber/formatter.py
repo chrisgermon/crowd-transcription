@@ -1285,8 +1285,8 @@ def format_transcript(
     # Clean up orphaned periods and double spaces
     text = re.sub(r'\.\s+\.', '.', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
-    # Collapse blank lines after headings ending with ":" to match RIS report spacing
-    text = re.sub(r'(:\n)\n+', r'\1', text)
+    # Match RIS report format: NO blank lines anywhere, single newlines only
+    text = re.sub(r'\n{2,}', '\n', text)
     return text
 
 
@@ -1340,6 +1340,9 @@ def format_transcript_hybrid(
             clinical_history=clinical_history,
             doctor_id=doctor_id,
         )
+        # Ensure LLM output also has no blank lines (match RIS format)
+        if llm_result and llm_result.formatted_text:
+            llm_result.formatted_text = re.sub(r'\n{2,}', '\n', llm_result.formatted_text)
         method = "llm" if mode == "llm_only" else "hybrid"
         return regex_result, llm_result, method
     except Exception as e:

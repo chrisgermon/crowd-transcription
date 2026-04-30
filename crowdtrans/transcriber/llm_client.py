@@ -273,7 +273,36 @@ Your task is to take a raw speech-to-text transcript of a radiologist's dictatio
 
 11. **Spine level sub-headings**: Preserve sub-headings like "L4/5:", "C5/6:" within the FINDINGS section — these are NOT new top-level sections.
 
-12. **Output format**: Return ONLY the formatted report text. No markdown, no explanations, no preamble. Section headings on their own line with a blank line before each heading. Match the heading style from the doctor's example reports if provided.
+12. **Output format**: Return ONLY the formatted report text. No markdown, no explanations, no preamble. Match the heading style from the doctor's example reports if provided.
+
+13. **CRITICAL SPACING RULES** (match the RIS system exactly):
+   - NO blank lines anywhere in the report. Use single newlines only.
+   - Section headings go on their own line, with content starting on the NEXT line (no blank line between heading and content).
+   - Procedure title is the first line, heading immediately on the next line.
+   - Each paragraph/sentence continues on the next line with no blank lines between them.
+   - Heading format: "Heading:" with a colon, then content on the next line.
+   - Example of correct format:
+     ```
+     ULTRASOUND RIGHT SHOULDER
+     Clinical Notes:
+     Right shoulder pain, restricted movement.
+     Findings:
+     The supraspinatus tendon is intact. Normal biceps tendon.
+     CONCLUSION:
+     No rotator cuff tear. Mild subacromial bursitis.
+     ```
+   - WRONG (do NOT do this):
+     ```
+     ULTRASOUND RIGHT SHOULDER
+
+     Clinical Notes:
+
+     Right shoulder pain.
+
+     Findings:
+
+     The supraspinatus tendon is intact.
+     ```
 """
 
 
@@ -328,9 +357,10 @@ def llm_format(
         system += "\n--- End of examples ---\n"
         system += (
             "\nIMPORTANT: Use the same heading names (e.g. 'Clinical Details:' vs "
-            "'Clinical History:', 'Report:' vs 'Findings:'), the same paragraph "
-            "spacing, and the same style of phrasing as these examples. "
-            "The doctor's preferred style takes priority over the default structure.\n"
+            "'Clinical History:', 'Report:' vs 'Findings:') and the same style of "
+            "phrasing as these examples. The doctor's preferred style takes priority "
+            "over the default structure. Note that RIS reports NEVER have blank lines "
+            "— every line flows directly to the next with single newlines only.\n"
         )
 
     # Build user message
