@@ -541,7 +541,7 @@ def _process_pending(session, site: SiteConfig) -> int:
     pending = (
         session.query(Transcription)
         .filter(Transcription.site_id == site.site_id, Transcription.status == "pending")
-        .order_by(Transcription.source_dictation_id.asc())
+        .order_by(Transcription.source_dictation_id.desc())
         .limit(site.batch_size)
         .all()
     )
