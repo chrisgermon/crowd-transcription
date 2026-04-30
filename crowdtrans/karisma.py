@@ -51,12 +51,13 @@ SELECT
     REFPRAC.FirstName AS ReferringPractitionerFirstName,
     REFPRAC.Surname AS ReferringPractitionerSurname,
 
-    RI.[Key] AS ReportInstanceKey,
-    RI.ClinicalAvailability,
-    RI.ProcessStatus AS ReportProcessStatus
+    COALESCE(RI.[Key], RI2.[Key]) AS ReportInstanceKey,
+    COALESCE(RI.ClinicalAvailability, RI2.ClinicalAvailability) AS ClinicalAvailability,
+    COALESCE(RI.ProcessStatus, RI2.ProcessStatus) AS ReportProcessStatus
 
 FROM [Version].[Karisma.Dictation.Instance] DI
 
+-- Path 1: Dictation -> ReportInstanceChange -> Report.Instance (traditional)
 LEFT JOIN [Version].[Karisma.Dictation.Instance-ReportInstanceChange] DIRIC
     ON DIRIC.ParentKey = DI.[Key] AND DIRIC.DeletedTransactionKey IS NULL
 LEFT JOIN [Version].[Karisma.Report.InstanceChange] RIC
@@ -64,12 +65,21 @@ LEFT JOIN [Version].[Karisma.Report.InstanceChange] RIC
 LEFT JOIN [Version].[Karisma.Report.Instance] RI
     ON RIC.ReportInstanceKey = RI.[Key] AND RI.IsDiscarded = 0
 
-LEFT JOIN [Version].[Karisma.Request.Record] RR
-    ON RI.RequestRecordKey = RR.[Key]
+-- Path 2: Dictation -> Document -> Report.Instance (catches 91% vs 58%)
+LEFT JOIN [Version].[Karisma.Dictation.Instance-Document] DID
+    ON DID.ParentKey = DI.[Key] AND DID.DeletedTransactionKey IS NULL
+LEFT JOIN [Version].[Karisma.Report.Instance] RI2
+    ON RI2.DocumentKey = DID.ChildKey AND RI2.IsDiscarded = 0
+    AND RI.[Key] IS NULL  -- only use Path 2 if Path 1 didn't find anything
 
+-- Request from whichever Report path succeeded
+LEFT JOIN [Version].[Karisma.Request.Record] RR
+    ON RR.[Key] = COALESCE(RI.RequestRecordKey, RI2.RequestRecordKey)
+
+-- Service linked to this report instance
 LEFT JOIN [Version].[Karisma.Request.Service] RS
     ON RS.RequestRecordKey = RR.[Key]
-    AND RS.ReportInstanceKey = RI.[Key]
+    AND RS.ReportInstanceKey = COALESCE(RI.[Key], RI2.[Key])
     AND RS.IsDiscarded = 0
 
 LEFT JOIN [Version].[Karisma.Service.Definition] SD
@@ -79,6 +89,7 @@ LEFT JOIN [Version].[Karisma.Service.Modality] SM
 LEFT JOIN [Version].[Karisma.Service.Department] SDEPT
     ON SD.ServiceDepartmentKey = SDEPT.[Key]
 
+-- Patient from Request
 LEFT JOIN [Version].[Karisma.Patient.Record] PR
     ON RR.PatientKey = PR.[Key]
 LEFT JOIN [Version].[Karisma.Patient.Name] PN
