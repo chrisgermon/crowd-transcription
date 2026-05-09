@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     # --- Web interface ---
     web_host: str = "0.0.0.0"
     web_port: int = 8080
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
 
     @property
     def sqlite_url(self) -> str:

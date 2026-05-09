@@ -1,8 +1,9 @@
-"""Dashboard route — GET /."""
+"""Dashboard route — GET /dashboard."""
 
 import datetime
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy import func
 
 from crowdtrans.config_store import get_config_store
@@ -14,6 +15,13 @@ router = APIRouter()
 
 
 @router.get("/")
+def root_redirect():
+    """Redirect root to worklist with today's date."""
+    today = datetime.date.today().isoformat()
+    return RedirectResponse(url=f"/worklist/?date_from={today}&date_to={today}", status_code=302)
+
+
+@router.get("/dashboard")
 def dashboard(request: Request, site: str = Query("", description="Filter by site")):
     with SessionLocal() as session:
         base = session.query(Transcription)

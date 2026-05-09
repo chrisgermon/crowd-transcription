@@ -1,15 +1,16 @@
 """JSON + HTMX API endpoints."""
 
 import datetime
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
-from crowdtrans.models import Transcription
+from crowdtrans.models import Transcription, TranscriptionEdit, WordReplacement
 
 router = APIRouter(prefix="/api")
 
@@ -142,16 +143,156 @@ def reformat_all():
         )
         count = 0
         for txn in txns:
+            _pn = " ".join(p for p in [txn.patient_given_names, txn.patient_family_name] if p) or None
             txn.formatted_text = format_transcript(
                 txn.transcript_text,
                 modality_code=txn.modality_code,
                 procedure_description=txn.procedure_description,
                 clinical_history=txn.complaint,
+                doctor_id=txn.doctor_id,
+                patient_name=_pn,
             )
             count += 1
         session.commit()
 
     return {"status": "ok", "reformatted": count}
+
+
+# ---------------------------------------------------------------------------
+# Worklist actions
+# ---------------------------------------------------------------------------
+
+
+@router.post("/worklist/{transcription_id}/mark-copied")
+def mark_copied(transcription_id: int):
+    """Mark a worklist item as copied."""
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        txn.worklist_status = "copied"
+        txn.copied_at = datetime.datetime.utcnow()
+        session.commit()
+    return {"status": "ok"}
+
+
+@router.post("/worklist/{transcription_id}/mark-ready")
+def mark_ready(transcription_id: int):
+    """Undo — mark a worklist item back as ready."""
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        txn.worklist_status = "ready"
+        txn.copied_at = None
+        session.commit()
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Audio-synced editor: word data, text editing, edit history
+# ---------------------------------------------------------------------------
+
+
+@router.get("/words/{transcription_id}")
+def get_words(transcription_id: int):
+    """Return word-level and paragraph-level timing data for audio sync."""
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        words = json.loads(txn.words_json) if txn.words_json else []
+        paragraphs = json.loads(txn.paragraphs_json) if txn.paragraphs_json else []
+    return {"words": words, "paragraphs": paragraphs}
+
+
+@router.post("/worklist/{transcription_id}/edit-text")
+async def edit_text(transcription_id: int, request: Request):
+    """Save an edit to the formatted text, with audit trail."""
+    body = await request.json()
+    new_text = body.get("text", "").strip()
+    editor = body.get("editor", "").strip() or "anonymous"
+
+    if not new_text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+
+        original_text = txn.formatted_text or ""
+
+        if new_text == original_text:
+            return {"status": "ok", "message": "No changes detected"}
+
+        # Save audit record
+        edit = TranscriptionEdit(
+            transcription_id=transcription_id,
+            original_text=original_text,
+            edited_text=new_text,
+            editor=editor,
+        )
+        session.add(edit)
+
+        # Update the live text
+        txn.formatted_text = new_text
+        session.commit()
+
+    return {"status": "ok", "message": "Text saved", "edit_id": edit.id}
+
+
+@router.get("/worklist/{transcription_id}/edit-history")
+def edit_history(transcription_id: int):
+    """Return the edit history for a transcription."""
+    with SessionLocal() as session:
+        edits = (
+            session.query(TranscriptionEdit)
+            .filter_by(transcription_id=transcription_id)
+            .order_by(TranscriptionEdit.created_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id": e.id,
+                "editor": e.editor,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "original_text": e.original_text,
+                "edited_text": e.edited_text,
+            }
+            for e in edits
+        ]
+
+
+@router.post("/worklist/{transcription_id}/revert/{edit_id}")
+def revert_edit(transcription_id: int, edit_id: int):
+    """Revert to the original text from a specific edit."""
+    with SessionLocal() as session:
+        edit_record = (
+            session.query(TranscriptionEdit)
+            .filter_by(id=edit_id, transcription_id=transcription_id)
+            .first()
+        )
+        if not edit_record:
+            raise HTTPException(status_code=404, detail="Edit not found")
+
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+
+        # Create a new audit entry for the revert
+        revert = TranscriptionEdit(
+            transcription_id=transcription_id,
+            original_text=txn.formatted_text or "",
+            edited_text=edit_record.original_text,
+            editor="revert",
+            edit_summary=f"Reverted to version before edit #{edit_id}",
+        )
+        session.add(revert)
+        txn.formatted_text = edit_record.original_text
+        session.commit()
+
+    return {"status": "ok", "message": "Reverted successfully"}
 
 
 # ---------------------------------------------------------------------------
@@ -337,3 +478,210 @@ def formatting_additions(transcription_id: int):
                 })
 
         return {"additions": additions}
+
+
+@router.post("/word-replacement")
+async def add_word_replacement(request: Request):
+    """Add a word replacement rule, optionally per-doctor."""
+    data = await request.json()
+    original = (data.get("original") or "").strip()
+    replacement = (data.get("replacement") or "").strip()
+    doctor_id = (data.get("doctor_id") or "").strip() or None
+
+    if not original or not replacement:
+        return {"error": "Both original and replacement are required"}
+    if original.lower() == replacement.lower():
+        return {"error": "Original and replacement are the same"}
+
+    with SessionLocal() as session:
+        # Check for existing rule
+        existing = session.query(WordReplacement).filter(
+            WordReplacement.original == original,
+            WordReplacement.doctor_id == doctor_id,
+        ).first()
+        if existing:
+            existing.replacement = replacement
+            existing.enabled = True
+        else:
+            session.add(WordReplacement(
+                original=original,
+                replacement=replacement,
+                doctor_id=doctor_id,
+            ))
+        session.commit()
+
+    # Clear formatter cache so the new rule takes effect
+    try:
+        from crowdtrans.transcriber.formatter import _clear_word_replacement_cache
+        _clear_word_replacement_cache()
+    except Exception:
+        pass
+
+    return {"status": "ok", "original": original, "replacement": replacement, "doctor_id": doctor_id}
+
+
+@router.get("/word-replacements")
+def list_word_replacements(doctor_id: str = Query("", description="Filter by doctor")):
+    """List word replacement rules."""
+    with SessionLocal() as session:
+        q = session.query(WordReplacement).filter(WordReplacement.enabled.is_(True))
+        if doctor_id:
+            from sqlalchemy import or_
+            q = q.filter(or_(
+                WordReplacement.doctor_id == doctor_id,
+                WordReplacement.doctor_id.is_(None),
+            ))
+        q = q.order_by(WordReplacement.original)
+        rules = [
+            {
+                "id": r.id,
+                "original": r.original,
+                "replacement": r.replacement,
+                "doctor_id": r.doctor_id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in q.all()
+        ]
+    return {"rules": rules}
+
+
+@router.delete("/word-replacement/{rule_id}")
+def delete_word_replacement(rule_id: int):
+    """Delete a word replacement rule."""
+    with SessionLocal() as session:
+        rule = session.query(WordReplacement).filter_by(id=rule_id).first()
+        if rule:
+            session.delete(rule)
+            session.commit()
+    try:
+        from crowdtrans.transcriber.formatter import _clear_word_replacement_cache
+        _clear_word_replacement_cache()
+    except Exception:
+        pass
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Patient search typeahead
+# ---------------------------------------------------------------------------
+
+
+@router.get("/patient-search")
+def patient_search(q: str = Query("", min_length=2, description="Search query")):
+    """Google-style search across patient name, UR, accession, procedure, doctor, modality."""
+    if len(q) < 2:
+        return {"results": []}
+
+    # Split query into words — each word must match at least one searchable field
+    terms = [t.strip() for t in q.split() if t.strip()]
+    if not terms:
+        return {"results": []}
+
+    searchable_fields = [
+        Transcription.patient_family_name,
+        Transcription.patient_given_names,
+        Transcription.patient_ur,
+        Transcription.accession_number,
+        Transcription.procedure_description,
+        Transcription.modality_code,
+        Transcription.doctor_family_name,
+        Transcription.doctor_given_names,
+        Transcription.facility_name,
+    ]
+
+    with SessionLocal() as session:
+        query = session.query(
+            Transcription.id,
+            Transcription.patient_family_name,
+            Transcription.patient_given_names,
+            Transcription.patient_ur,
+            Transcription.accession_number,
+            Transcription.procedure_description,
+            Transcription.modality_code,
+            Transcription.dictation_date,
+            Transcription.worklist_status,
+        ).filter(
+            Transcription.status == "complete",
+            Transcription.formatted_text.isnot(None),
+        )
+
+        # Each term must match at least one field (AND across terms, OR across fields)
+        for term in terms[:5]:  # cap at 5 terms
+            like = f"%{term}%"
+            query = query.filter(
+                or_(*(col.ilike(like) for col in searchable_fields))
+            )
+
+        matches = (
+            query
+            .order_by(Transcription.dictation_date.desc().nullslast())
+            .limit(20)
+            .all()
+        )
+
+    return {
+        "results": [
+            {
+                "id": r.id,
+                "patient_name": f"{r.patient_family_name or ''}, {r.patient_given_names or ''}".strip(", "),
+                "patient_ur": r.patient_ur or "",
+                "accession": r.accession_number or "",
+                "procedure": r.procedure_description or "",
+                "modality": r.modality_code or "",
+                "date": r.dictation_date.strftime("%Y-%m-%d") if r.dictation_date else "",
+                "status": r.worklist_status or "",
+            }
+            for r in matches
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Report templates from Karisma
+# ---------------------------------------------------------------------------
+
+
+@router.get("/templates/{transcription_id}")
+def get_templates(transcription_id: int):
+    """Fetch report templates matching the doctor and procedure for a transcription."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+
+        doctor_surname = txn.doctor_family_name
+        site_id = txn.site_id
+        procedure = txn.procedure_description
+
+    if not doctor_surname:
+        return {"templates": [], "message": "No doctor name available"}
+
+    store = get_config_store()
+    site_cfg = store.get_site(site_id)
+    if not site_cfg:
+        return {"templates": [], "message": "Site not configured"}
+
+    try:
+        from crowdtrans.karisma import fetch_report_templates
+
+        # Search by doctor surname + procedure keywords
+        templates_list = fetch_report_templates(
+            site_cfg,
+            doctor_surname=doctor_surname,
+            procedure_desc=procedure,
+        )
+
+        # If no results with procedure filter, try just doctor surname
+        if not templates_list and procedure:
+            templates_list = fetch_report_templates(
+                site_cfg,
+                doctor_surname=doctor_surname,
+            )
+
+        return {"templates": templates_list}
+    except Exception as e:
+        logger.warning("Failed to fetch templates: %s", e)
+        return {"templates": [], "message": str(e)[:200]}

@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}Voice Recognition ({{ total }}) — CrowdScription{% endblock %}
+
+{% block content %}
+{# Build query string helpers #}
+{% set loc_qs = namespace(val='') %}
+{% for loc in location %}{% set loc_qs.val = loc_qs.val + '&location=' + loc %}{% endfor %}
+{% set filter_qs = 'modality=' + modality + '&doctor=' + doctor + loc_qs.val %}
+
+{# Sort header macro #}
+{% macro sort_header(col, label) %}
+{% if sort == col %}
+<a href="?{{ filter_qs }}&sort={{ col }}&sort_dir={{ 'asc' if sort_dir == 'desc' else 'desc' }}" class="inline-flex items-center text-indigo-700 hover:text-indigo-900 font-semibold">
+    {{ label }}
+    {% if sort_dir == 'desc' %}
+    <svg class="w-3.5 h-3.5 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    {% else %}
+    <svg class="w-3.5 h-3.5 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+    {% endif %}
+</a>
+{% else %}
+<a href="?{{ filter_qs }}&sort={{ col }}&sort_dir=asc" class="inline-flex items-center text-gray-500 hover:text-gray-700">
+    {{ label }}
+</a>
+{% endif %}
+{% endmacro %}
+
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900">Voice Recognition</h1>
+        <p class="text-sm text-gray-500 mt-1">Studies completed and registered — ready for dictation</p>
+    </div>
+    <div class="flex items-center space-x-6">
+        <div class="text-right">
+            <div class="text-xs text-gray-400">
+                Last sync: <span id="sync-time">{{ last_sync_time.strftime('%H:%M:%S') if last_sync_time else 'Never' }}</span>
+            </div>
+            <button onclick="syncStudies()" id="sync-btn"
+                    class="mt-1 inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-600 bg-white hover:bg-gray-50">
+                <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span id="sync-label">Sync Now</span>
+            </button>
+        </div>
+        <div class="text-center">
+            <div class="text-2xl font-bold text-indigo-600">{{ total }}</div>
+            <div class="text-xs text-gray-500">awaiting dictation</div>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<form method="get" class="bg-white rounded-lg shadow p-4 mb-4">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div>
+            <select name="modality" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="">All modalities</option>
+                {% for m in modalities %}
+                <option value="{{ m }}" {% if modality == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="relative">
+            <div id="location-toggle"
+                 onclick="document.getElementById('location-dropdown').classList.toggle('hidden')"
+                 class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border cursor-pointer bg-white hover:bg-gray-50 flex items-center justify-between min-h-[38px]">
+                <span class="truncate {% if not location %}text-gray-500{% else %}text-gray-900{% endif %}">
+                    {% if not location %}All locations{% elif location|length == 1 %}{{ location[0] }}{% else %}{{ location|length }} locations{% endif %}
+                </span>
+                <svg class="w-4 h-4 text-gray-400 flex-shrink-0 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+            </div>
+            <div id="location-dropdown" class="hidden absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                <div class="p-2 border-b border-gray-100 sticky top-0 bg-white">
+                    <input type="text" placeholder="Search..." oninput="filterLocations(this.value)"
+                           class="w-full rounded border-gray-300 text-xs px-2 py-1.5 border focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div class="p-1">
+                    {% for f in facilities %}
+                    <label class="location-opt flex items-center px-2 py-1.5 hover:bg-gray-50 rounded cursor-pointer text-sm" data-name="{{ f|lower }}">
+                        <input type="checkbox" name="location" value="{{ f }}"
+                               {% if f in location %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 mr-2">
+                        <span class="truncate">{{ f }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        <div>
+            <input type="text" name="doctor" value="{{ doctor }}" placeholder="Doctor name..."
+                   class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+        </div>
+        <div class="flex items-center space-x-2">
+            <button type="submit" class="flex-1 bg-indigo-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-indigo-700">
+                Filter
+            </button>
+            {% if modality or doctor or location %}
+            <a href="/voice/" class="text-sm text-gray-500 hover:text-gray-700 whitespace-nowrap">Clear</a>
+            {% endif %}
+        </div>
+    </div>
+    {% if location %}
+    <div class="flex flex-wrap gap-1.5 mt-3">
+        {% for loc in location %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+            {{ loc }}
+            <a href="?modality={{ modality }}&doctor={{ doctor }}{% for l in location %}{% if l != loc %}&location={{ l }}{% endif %}{% endfor %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+               class="ml-1 text-indigo-400 hover:text-indigo-600">&times;</a>
+        </span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</form>
+
+<!-- Table -->
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('patient', 'Patient') }}
+                    </th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('accession', 'Accession') }}
+                    </th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('procedure', 'Procedure') }}
+                    </th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('modality', 'Mod') }}
+                    </th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('doctor', 'Doctor') }}
+                    </th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('date', 'Registered') }}
+                    </th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {{ sort_header('location', 'Location') }}
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for s in items %}
+                <tr class="hover:bg-gray-50 transition-colors cursor-pointer" onclick="window.location='/voice/{{ s.ServiceKey }}'">
+                    <td class="px-4 py-3 whitespace-nowrap">
+                        <a href="/voice/{{ s.ServiceKey }}" class="font-medium text-indigo-600 hover:text-indigo-900">
+                            {{ s.PatientLastName or '' }}{% if s.PatientFirstName %}, {{ s.PatientFirstName }}{% endif %}
+                        </a>
+                        {% if s.PatientId %}
+                        <div class="text-xs text-gray-400">UR: {{ s.PatientId }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                        {{ s.AccessionNumber or s.InternalIdentifier or '—' }}
+                    </td>
+                    <td class="px-4 py-3 text-sm text-gray-600 max-w-[220px] truncate" title="{{ s.ServiceName or '' }}">
+                        {{ s.ServiceName or '—' }}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ s.ModalityCode or '?' }}</span>
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                        {% if s.PractitionerSurname %}
+                        Dr {{ s.PractitionerSurname }}
+                        {% else %}
+                        <span class="text-gray-400">Unassigned</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                        {{ s.RegisteredDate.strftime('%Y-%m-%d %H:%M') if s.RegisteredDate else '—' }}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600 max-w-[160px] truncate" title="{{ s.WorkSiteName or '' }}">
+                        {{ s.WorkSiteName or '—' }}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" class="px-4 py-12 text-center text-gray-400">
+                        No undictated studies found. All studies have been reported.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<div class="mt-4 flex items-center justify-between">
+    <div class="text-sm text-gray-500">Page {{ page }} of {{ total_pages }} ({{ total }} studies)</div>
+    <div class="flex space-x-2">
+        {% if page > 1 %}
+        <a href="?{{ filter_qs }}&sort={{ sort }}&sort_dir={{ sort_dir }}&page={{ page - 1 }}"
+           class="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:bg-gray-100">Previous</a>
+        {% endif %}
+        {% if page < total_pages %}
+        <a href="?{{ filter_qs }}&sort={{ sort }}&sort_dir={{ sort_dir }}&page={{ page + 1 }}"
+           class="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:bg-gray-100">Next</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<script>
+function filterLocations(query) {
+    var q = query.toLowerCase();
+    document.querySelectorAll('.location-opt').forEach(function(el) {
+        el.style.display = el.dataset.name.indexOf(q) >= 0 ? '' : 'none';
+    });
+}
+
+document.addEventListener('click', function(e) {
+    var dd = document.getElementById('location-dropdown');
+    var toggle = document.getElementById('location-toggle');
+    if (dd && toggle && !dd.contains(e.target) && !toggle.contains(e.target)) {
+        dd.classList.add('hidden');
+    }
+});
+
+function syncStudies() {
+    var btn = document.getElementById('sync-btn');
+    var label = document.getElementById('sync-label');
+    btn.disabled = true;
+    label.textContent = 'Syncing...';
+    fetch('/voice/sync', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                label.textContent = 'Error!';
+                setTimeout(function() { label.textContent = 'Sync Now'; btn.disabled = false; }, 3000);
+            } else {
+                label.textContent = data.synced + ' synced';
+                setTimeout(function() { location.reload(); }, 500);
+            }
+        })
+        .catch(function() {
+            label.textContent = 'Failed';
+            setTimeout(function() { label.textContent = 'Sync Now'; btn.disabled = false; }, 3000);
+        });
+}
+</script>
+{% endblock %}

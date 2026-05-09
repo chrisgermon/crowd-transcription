@@ -90,6 +90,12 @@ class Transcription(Base):
     patient_family_name = Column(String, nullable=True)
     patient_dob = Column(String, nullable=True)
 
+    # Karisma report linkage
+    report_instance_key = Column(BigInteger, nullable=True)
+    report_process_status = Column(Integer, nullable=True)
+    final_report_text = Column(Text, nullable=True)      # final typed report from Karisma
+    existing_report_text = Column(Text, nullable=True)    # pre-populated template content (before dictation)
+
     # Order / Request
     order_id = Column(String, nullable=True)
     accession_number = Column(String, nullable=True)
@@ -170,6 +176,107 @@ class Transcription(Base):
         Index("ix_dictation_date", "dictation_date"),
         Index("ix_site_source", "site_id", "source_dictation_id"),
         Index("ix_worklist_status", "worklist_status"),
+    )
+
+
+class TranscriptionEdit(Base):
+    """Audit trail for manual edits to formatted_text."""
+    __tablename__ = "transcription_edits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transcription_id = Column(Integer, nullable=False)
+    original_text = Column(Text, nullable=False)
+    edited_text = Column(Text, nullable=False)
+    editor = Column(String, nullable=True)  # username or identifier
+    edit_summary = Column(String, nullable=True)  # optional description of what changed
+    created_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_te_transcription", "transcription_id"),
+        Index("ix_te_created", "created_at"),
+    )
+
+
+class PendingStudy(Base):
+    """Cached undictated studies from Karisma — registered but no report yet."""
+    __tablename__ = "pending_studies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    site_id = Column(String, nullable=False)
+    service_key = Column(BigInteger, nullable=False)  # Karisma Request.Service Key
+    request_key = Column(BigInteger, nullable=True)
+
+    accession_number = Column(String, nullable=True)
+    internal_identifier = Column(String, nullable=True)
+
+    patient_title = Column(String, nullable=True)
+    patient_first_name = Column(String, nullable=True)
+    patient_last_name = Column(String, nullable=True)
+    patient_id = Column(String, nullable=True)
+    patient_dob = Column(String, nullable=True)
+
+    service_name = Column(String, nullable=True)
+    service_code = Column(String, nullable=True)
+    modality_code = Column(String, nullable=True)
+    modality_name = Column(String, nullable=True)
+
+    doctor_code = Column(String, nullable=True)
+    doctor_title = Column(String, nullable=True)
+    doctor_first_name = Column(String, nullable=True)
+    doctor_surname = Column(String, nullable=True)
+
+    facility_name = Column(String, nullable=True)
+    facility_code = Column(String, nullable=True)
+
+    registered_date = Column(DateTime, nullable=True)
+    scheduled_date = Column(DateTime, nullable=True)
+
+    synced_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("site_id", "service_key", name="uq_pending_site_service"),
+        Index("ix_pending_modality", "modality_code"),
+        Index("ix_pending_facility", "facility_name"),
+        Index("ix_pending_doctor", "doctor_surname"),
+        Index("ix_pending_registered", "registered_date"),
+    )
+
+
+class Radiologist(Base):
+    """Radiologist profiles with signature blocks for report formatting."""
+    __tablename__ = "radiologists"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    doctor_code = Column(String, nullable=True, unique=True)  # Karisma practitioner code
+    title = Column(String, nullable=True)  # Dr
+    first_name = Column(String, nullable=False)
+    surname = Column(String, nullable=False)
+    qualifications = Column(String, nullable=True)  # e.g. MBBS FRANZCR
+    role = Column(String, nullable=True)  # e.g. Consultant Radiologist
+    signature_text = Column(Text, nullable=True)  # full signature block
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_rad_surname", "surname"),
+    )
+
+
+class WordReplacement(Base):
+    """User-defined word replacements, optionally per-doctor."""
+    __tablename__ = "word_replacements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    original = Column(String, nullable=False)  # word/phrase to find (case-insensitive)
+    replacement = Column(String, nullable=False)  # what to replace it with
+    doctor_id = Column(String, nullable=True)  # NULL = global, otherwise doctor code
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_wr_doctor", "doctor_id"),
+        Index("ix_wr_original", "original"),
     )
 
 

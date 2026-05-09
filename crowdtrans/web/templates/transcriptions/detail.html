@@ -219,20 +219,20 @@
                 {% endif %}
                 {% if txn.complaint %}
                 <div>
-                    <dt class="text-gray-400">Clinical Notes</dt>
+                    <dt class="text-gray-400">Clinical Indication</dt>
                     <dd class="font-medium text-gray-900">{{ txn.complaint }}</dd>
+                </div>
+                {% endif %}
+                {% if txn.order_notes %}
+                <div>
+                    <dt class="text-gray-400">Order / Scheduling Notes</dt>
+                    <dd class="font-medium text-gray-600 text-xs bg-amber-50 rounded p-1.5">{{ txn.order_notes }}</dd>
                 </div>
                 {% endif %}
                 {% if txn.worksheet_notes %}
                 <div>
                     <dt class="text-gray-400">Worksheet Notes</dt>
                     <dd class="font-medium text-gray-600 text-xs">{{ txn.worksheet_notes }}</dd>
-                </div>
-                {% endif %}
-                {% if txn.order_notes %}
-                <div>
-                    <dt class="text-gray-400">Order Notes</dt>
-                    <dd class="font-medium text-gray-600 text-xs">{{ txn.order_notes }}</dd>
                 </div>
                 {% endif %}
                 <div>
@@ -315,8 +315,54 @@
     </div>
 </div>
 
+<style>
+    .report-title { font-weight: 700; }
+    .report-heading { font-weight: 700; }
+</style>
+
 <script>
 var _additionsLoaded = false;
+
+// ── Report formatting: bold titles/headings, spacing between sections ──
+
+var _HEADING_PATTERNS = /^(Clinical History:|Clinical Details:|Technique:|Findings:|FINDINGS:|Report:|REPORT:|CONCLUSION:|COMMENT:|Impression:|IMPRESSION:|Comment:)\s*$/i;
+
+function formatReportDisplay(el) {
+    if (!el) return;
+    var html = el.innerHTML;
+    var lines = html.split('\n');
+    var result = [];
+    var isFirstLine = true;
+
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var stripped = line.replace(/<[^>]*>/g, '').trim();
+
+        if (!stripped) { result.push(line); continue; }
+
+        if (isFirstLine && stripped === stripped.toUpperCase() && stripped.length > 2) {
+            result.push('<span class="report-title">' + line + '</span>');
+            isFirstLine = false;
+            continue;
+        }
+        isFirstLine = false;
+
+        if (_HEADING_PATTERNS.test(stripped)) {
+            result.push('<span class="report-heading">' + line + '</span>');
+        } else {
+            result.push(line);
+        }
+    }
+    el.innerHTML = result.join('\n');
+}
+
+// Format all report display divs on load
+document.addEventListener('DOMContentLoaded', function() {
+    ['report-llm', 'report-formatted'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) formatReportDisplay(el);
+    });
+});
 
 function toggleAdditions() {
     var panel = document.getElementById('additions-panel');

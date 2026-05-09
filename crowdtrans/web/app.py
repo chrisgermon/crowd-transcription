@@ -1,14 +1,76 @@
 """FastAPI application factory."""
 
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 WEB_DIR = Path(__file__).parent
 
+# Persist session secret so restarts don't invalidate sessions.
+# Try the data dir first (when running as crowdtrans service), fall back to home dir.
+_SECRET_CANDIDATES = [
+    Path("/opt/crowdtrans/data/.session_secret"),
+    Path.home() / ".crowdscription_session_secret",
+]
+_SESSION_SECRET = ""
+for _sf in _SECRET_CANDIDATES:
+    if _sf.exists():
+        _SESSION_SECRET = _sf.read_text().strip()
+        break
+if not _SESSION_SECRET:
+    _SESSION_SECRET = secrets.token_hex(32)
+    for _sf in _SECRET_CANDIDATES:
+        try:
+            _sf.parent.mkdir(parents=True, exist_ok=True)
+            _sf.write_text(_SESSION_SECRET)
+            break
+        except OSError:
+            continue
+
 app = FastAPI(title="CrowdScription", docs_url=None, redoc_url=None)
+
+
+class _AuthMiddleware:
+    """Redirect unauthenticated users to /login.
+
+    Must be added *after* SessionMiddleware via add_middleware so that
+    SessionMiddleware wraps us (runs first) and populates request.session.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        path = scope["path"]
+        if path.startswith("/static") or path in ("/login", "/logout") or path.startswith("/api/"):
+            return await self.app(scope, receive, send)
+
+        request = Request(scope, receive, send)
+        if not request.session.get("user"):
+            response = RedirectResponse(url="/login", status_code=302)
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+
+# Order matters: add_middleware wraps in reverse order, so SessionMiddleware
+# is added last but runs first (outermost), then AuthMiddleware checks session.
+app.add_middleware(_AuthMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    session_cookie="crowdscription_session",
+    max_age=28800,  # 8 hours
+)
+
 
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
@@ -42,10 +104,12 @@ def _from_json(value):
 templates.env.filters["from_json"] = _from_json
 
 # Import routes after templates is defined to avoid circular import
-from crowdtrans.web.routes import api, compare, dashboard, learning, settings, transcriptions, worklist  # noqa: E402
+from crowdtrans.web.routes import api, compare, dashboard, learning, login, settings, transcriptions, voice, worklist  # noqa: E402
 
+app.include_router(login.router)
 app.include_router(dashboard.router)
 app.include_router(worklist.router)
+app.include_router(voice.router)
 app.include_router(transcriptions.router)
 app.include_router(compare.router)
 app.include_router(learning.router)

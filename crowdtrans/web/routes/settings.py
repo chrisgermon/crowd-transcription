@@ -1,14 +1,15 @@
 """Settings routes — view/edit global config and site configs."""
 
 import logging
+import subprocess
 from typing import List
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
-from crowdtrans.models import Transcription
+from crowdtrans.models import Radiologist, Transcription
 from crowdtrans.web.app import templates
 
 logger = logging.getLogger(__name__)
@@ -46,11 +47,31 @@ def settings_page(request: Request):
                 "excluded": name in excluded_set,
             })
 
+    # Load radiologists
+    with SessionLocal() as session:
+        radiologists = session.query(Radiologist).order_by(Radiologist.surname).all()
+        # Detach from session for template use
+        radiologists = [
+            {
+                "id": r.id,
+                "doctor_code": r.doctor_code or "",
+                "title": r.title or "",
+                "first_name": r.first_name,
+                "surname": r.surname,
+                "qualifications": r.qualifications or "",
+                "role": r.role or "",
+                "signature_text": r.signature_text or "",
+                "enabled": r.enabled,
+            }
+            for r in radiologists
+        ]
+
     return templates.TemplateResponse("settings/index.html", {
         "request": request,
         "globals": globals_,
         "sites": sites,
         "worksites": worksites,
+        "radiologists": radiologists,
     })
 
 
@@ -63,6 +84,43 @@ async def save_worksites(request: Request):
     store.set_global("excluded_worksites", ",".join(excluded))
     logger.info("Updated excluded worksites: %d sites excluded", len(excluded))
     return RedirectResponse("/settings/", status_code=303)
+
+
+@router.post("/auth")
+def save_auth(
+    request: Request,
+    ad_server: str = Form("10.17.10.10"),
+    ad_domain: str = Form("images.local"),
+):
+    store = get_config_store()
+    store.set_global("ad_server", ad_server.strip())
+    store.set_global("ad_domain", ad_domain.strip())
+    logger.info("Updated AD settings: server=%s domain=%s", ad_server, ad_domain)
+    return RedirectResponse("/settings/", status_code=303)
+
+
+@router.post("/auth/test")
+def test_ad_connection(request: Request):
+    """Test connectivity to the Active Directory server."""
+    store = get_config_store()
+    ad_server = store.get_global("ad_server") or "10.17.10.10"
+    ad_domain = store.get_global("ad_domain") or "images.local"
+
+    import socket
+    try:
+        sock = socket.create_connection((ad_server, 389), timeout=5)
+        sock.close()
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": True,
+            "message": f"Connected to LDAP at {ad_server}:389 (domain: {ad_domain})",
+        })
+    except Exception as e:
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": False,
+            "message": f"Cannot reach {ad_server}:389 — {e}",
+        })
 
 
 @router.post("/global")
@@ -304,3 +362,164 @@ def test_connection(request: Request, site_id: str):
         "success": success,
         "message": message,
     })
+
+
+# ------------------------------------------------------------------
+# Radiologist management
+# ------------------------------------------------------------------
+
+
+@router.post("/radiologists/add")
+async def add_radiologist(request: Request):
+    form = await request.form()
+    with SessionLocal() as session:
+        rad = Radiologist(
+            doctor_code=form.get("doctor_code", "").strip() or None,
+            title=form.get("title", "").strip() or None,
+            first_name=form.get("first_name", "").strip(),
+            surname=form.get("surname", "").strip(),
+            qualifications=form.get("qualifications", "").strip() or None,
+            role=form.get("role", "").strip() or None,
+            signature_text=form.get("signature_text", "").strip() or None,
+            enabled=True,
+        )
+        session.add(rad)
+        session.commit()
+    logger.info("Added radiologist: %s %s", form.get("first_name"), form.get("surname"))
+    # Clear cached radiologist signatures
+    _clear_signature_cache()
+    return RedirectResponse("/settings/#radiologists", status_code=303)
+
+
+@router.post("/radiologists/{rad_id}")
+async def update_radiologist(request: Request, rad_id: int):
+    form = await request.form()
+    with SessionLocal() as session:
+        rad = session.query(Radiologist).filter_by(id=rad_id).first()
+        if not rad:
+            return RedirectResponse("/settings/", status_code=303)
+        rad.doctor_code = form.get("doctor_code", "").strip() or None
+        rad.title = form.get("title", "").strip() or None
+        rad.first_name = form.get("first_name", "").strip()
+        rad.surname = form.get("surname", "").strip()
+        rad.qualifications = form.get("qualifications", "").strip() or None
+        rad.role = form.get("role", "").strip() or None
+        rad.signature_text = form.get("signature_text", "").strip() or None
+        session.commit()
+    logger.info("Updated radiologist #%d", rad_id)
+    _clear_signature_cache()
+    return RedirectResponse("/settings/#radiologists", status_code=303)
+
+
+@router.post("/radiologists/{rad_id}/delete")
+def delete_radiologist(request: Request, rad_id: int):
+    with SessionLocal() as session:
+        rad = session.query(Radiologist).filter_by(id=rad_id).first()
+        if rad:
+            session.delete(rad)
+            session.commit()
+            logger.info("Deleted radiologist #%d", rad_id)
+    _clear_signature_cache()
+    return RedirectResponse("/settings/#radiologists", status_code=303)
+
+
+def _clear_signature_cache():
+    """Clear the cached radiologist signatures in the formatter."""
+    try:
+        from crowdtrans.transcriber.formatter import _clear_radiologist_cache
+        _clear_radiologist_cache()
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------
+# Service control (systemd)
+# ------------------------------------------------------------------
+
+SERVICE_NAME = "crowdtrans-service.service"
+
+
+@router.get("/service/status")
+def service_status(request: Request):
+    """Return the current status of the transcription service."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", SERVICE_NAME],
+            capture_output=True, text=True, timeout=5,
+        )
+        active = result.stdout.strip() == "active"
+    except Exception:
+        active = False
+
+    color = "green" if active else "gray"
+    label = "Running" if active else "Stopped"
+    return HTMLResponse(
+        f'<span id="service-badge" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-{color}-100 text-{color}-800">'
+        f'{label}</span>'
+    )
+
+
+@router.post("/service/stop")
+def service_stop(request: Request):
+    """Stop the transcription polling service."""
+    try:
+        subprocess.run(
+            ["sudo", "systemctl", "stop", SERVICE_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info("Transcription service stopped via UI")
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": True,
+            "message": "Transcription service stopped.",
+        })
+    except Exception as e:
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": False,
+            "message": f"Failed to stop service: {e}",
+        })
+
+
+@router.post("/service/start")
+def service_start(request: Request):
+    """Start the transcription polling service."""
+    try:
+        subprocess.run(
+            ["sudo", "systemctl", "start", SERVICE_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info("Transcription service started via UI")
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": True,
+            "message": "Transcription service started.",
+        })
+    except Exception as e:
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": False,
+            "message": f"Failed to start service: {e}",
+        })
+
+
+@router.post("/service/restart")
+def service_restart(request: Request):
+    """Restart the transcription polling service."""
+    try:
+        subprocess.run(
+            ["sudo", "systemctl", "restart", SERVICE_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info("Transcription service restarted via UI")
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": True,
+            "message": "Transcription service restarted.",
+        })
+    except Exception as e:
+        return templates.TemplateResponse("settings/_test_result.html", {
+            "request": request,
+            "success": False,
+            "message": f"Failed to restart service: {e}",
+        })

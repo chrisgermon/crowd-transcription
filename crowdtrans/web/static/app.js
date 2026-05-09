@@ -20,6 +20,11 @@ function toggleSiteEdit(siteId) {
     edit.classList.toggle('hidden');
 }
 
+function toggleRadEdit(radId) {
+    var edit = document.getElementById('rad-edit-' + radId);
+    if (edit) edit.classList.toggle('hidden');
+}
+
 function updateAudioFields(selectEl, siteId) {
     var isKarisma = selectEl.value === 'karisma';
     var prefix = siteId === 'new' ? 'new' : siteId;
@@ -93,10 +98,12 @@ function copyReport() {
     var llm = document.getElementById('report-llm');
     var formatted = document.getElementById('report-formatted');
     var raw = document.getElementById('report-raw');
+    var plain = document.getElementById('report-text');
     // Copy whichever view is currently visible
     var text = (llm && !llm.classList.contains('hidden')) ? llm :
                (formatted && !formatted.classList.contains('hidden')) ? formatted :
-               (raw && !raw.classList.contains('hidden')) ? raw : null;
+               (raw && !raw.classList.contains('hidden')) ? raw :
+               plain || null;
     if (!text) return;
 
     navigator.clipboard.writeText(text.textContent).then(function () {

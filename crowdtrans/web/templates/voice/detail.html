@@ -1,0 +1,505 @@
+{% extends "base.html" %}
+{% block title %}Dictate — {{ study.PatientFirstName or '' }} {{ study.PatientLastName or 'Patient' }} — CrowdScription{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <a href="/voice/" class="text-sm text-indigo-600 hover:text-indigo-800">&larr; Back to voice worklist</a>
+</div>
+
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900">
+            {{ study.PatientTitle or '' }} {{ study.PatientFirstName or '' }} {{ study.PatientLastName or 'Unknown' }}
+        </h1>
+        <p class="text-sm text-gray-500 mt-1">
+            <span class="font-medium text-gray-700">{{ study.AccessionNumber or study.InternalIdentifier or '' }}</span>
+            {{ study.ServiceName or '' }}
+            {% if study.ModalityCode %}
+            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ study.ModalityCode }}</span>
+            {% endif %}
+            {% if study.PractitionerSurname %}
+            &middot; Dr {{ study.PractitionerSurname }}
+            {% endif %}
+            {% if study.WorkSiteName %}
+            &middot; {{ study.WorkSiteName }}
+            {% endif %}
+        </p>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Main recording + report area (2/3) -->
+    <div class="lg:col-span-2 space-y-4">
+
+        <!-- Recording controls -->
+        <div class="bg-white rounded-lg shadow">
+            <div class="px-5 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-semibold text-gray-900">Dictation</h2>
+            </div>
+            <div class="p-5">
+                <!-- Waveform -->
+                <div class="mb-4 bg-gray-900 rounded-lg overflow-hidden" style="height: 80px;">
+                    <canvas id="waveform" class="w-full h-full"></canvas>
+                </div>
+
+                <!-- Controls -->
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <button onclick="startRecording()" id="btn-record"
+                                class="inline-flex items-center px-5 py-2.5 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="8"/>
+                            </svg>
+                            Record
+                        </button>
+                        <button onclick="stopRecording()" id="btn-stop" disabled
+                                class="inline-flex items-center px-5 py-2.5 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
+                                <rect x="6" y="6" width="12" height="12" rx="1"/>
+                            </svg>
+                            Stop
+                        </button>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <span id="recording-time" class="text-sm font-mono text-gray-500">00:00</span>
+                        <span id="recording-status" class="text-sm text-gray-400">Ready</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Report output -->
+        <div class="bg-white rounded-lg shadow" id="report-card">
+            <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Report</h2>
+                <div class="flex items-center space-x-2">
+                    <button onclick="toggleEdit()" id="edit-toggle-btn"
+                            class="hidden inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-sm font-medium text-gray-600 bg-white hover:bg-gray-50">
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                        </svg>
+                        <span id="edit-toggle-label">Edit</span>
+                    </button>
+                    <button onclick="copyReport()" id="copy-btn"
+                            class="hidden inline-flex items-center px-4 py-2 border border-indigo-300 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                        </svg>
+                        <span id="copy-label">Copy Report</span>
+                    </button>
+                </div>
+            </div>
+            <!-- View mode -->
+            <div id="view-mode" class="p-5">
+                <div id="report-text" class="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap leading-relaxed min-h-[200px]">
+                    <span class="text-gray-400 italic">Record a dictation to generate a report...</span>
+                </div>
+            </div>
+            <!-- Edit mode -->
+            <div id="edit-mode" class="p-5 hidden">
+                <textarea id="edit-textarea"
+                    class="w-full min-h-[300px] rounded-md border-gray-300 shadow-sm text-sm font-mono leading-relaxed p-3 border focus:ring-indigo-500 focus:border-indigo-500"
+                    spellcheck="true"></textarea>
+                <div class="mt-3 flex items-center justify-end space-x-2">
+                    <button onclick="cancelEdit()" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
+                    <button onclick="saveEdit()" class="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Processing info -->
+        <div id="processing-info" class="hidden bg-white rounded-lg shadow p-4">
+            <dl class="grid grid-cols-3 gap-4 text-sm">
+                <div>
+                    <dt class="text-gray-400">Confidence</dt>
+                    <dd id="info-confidence" class="font-medium text-gray-900">—</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Processing Time</dt>
+                    <dd id="info-time" class="font-medium text-gray-900">—</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Audio Duration</dt>
+                    <dd id="info-duration" class="font-medium text-gray-900">—</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Sidebar (1/3) -->
+    <div class="space-y-4">
+        <!-- Patient -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Patient</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Name</dt>
+                    <dd class="font-medium text-gray-900">{{ study.PatientTitle or '' }} {{ study.PatientFirstName or '' }} {{ study.PatientLastName or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">UR</dt>
+                    <dd class="font-medium text-gray-900">{{ study.PatientId or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">DOB</dt>
+                    <dd class="font-medium text-gray-900">{{ study.PatientDOB.strftime('%Y-%m-%d') if study.PatientDOB else '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Study -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Study</h3>
+            <dl class="space-y-2 text-sm">
+                <div>
+                    <dt class="text-gray-400">Accession</dt>
+                    <dd class="font-medium text-gray-900">{{ study.AccessionNumber or study.InternalIdentifier or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Procedure</dt>
+                    <dd class="font-medium text-gray-900">{{ study.ServiceName or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Modality</dt>
+                    <dd class="font-medium text-gray-900">{{ study.ModalityName or study.ModalityCode or '—' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-gray-400">Registered</dt>
+                    <dd class="font-medium text-gray-900">{{ study.RegisteredDate.strftime('%Y-%m-%d %H:%M') if study.RegisteredDate else '—' }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Doctor -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Reporting Doctor</h3>
+            <p class="text-sm font-medium text-gray-900">
+                {% if study.PractitionerSurname %}
+                {{ study.PractitionerTitle or 'Dr' }} {{ study.PractitionerFirstName or '' }} {{ study.PractitionerSurname }}
+                {% else %}
+                <span class="text-gray-400">Not assigned</span>
+                {% endif %}
+            </p>
+        </div>
+
+        <!-- Facility -->
+        <div class="bg-white rounded-lg shadow p-4">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Facility</h3>
+            <p class="text-sm font-medium text-gray-900">{{ study.WorkSiteName or '—' }}</p>
+        </div>
+    </div>
+</div>
+
+<style>
+    .report-title { font-weight: 700; }
+    .report-heading { font-weight: 700; }
+</style>
+
+<script>
+(function() {
+    var SERVICE_KEY = {{ study.ServiceKey }};
+    var MODALITY = {{ study.ModalityCode | tojson }};
+    var PROCEDURE = {{ study.ServiceName | tojson }};
+    var DOCTOR_CODE = {{ (study.PractitionerCode or '') | tojson }};
+    var PATIENT_NAME = {{ ((study.PatientFirstName or '') + ' ' + (study.PatientLastName or '')) | trim | tojson }};
+
+    var mediaRecorder = null;
+    var audioChunks = [];
+    var audioContext = null;
+    var analyser = null;
+    var animFrame = null;
+    var recordingStart = null;
+    var timerInterval = null;
+    var isEditing = false;
+    var currentFormattedText = '';
+
+    // ── Recording ──
+
+    window.startRecording = function() {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+            audioChunks = [];
+            mediaRecorder = new MediaRecorder(stream, { mimeType: getBestMimeType() });
+
+            mediaRecorder.ondataavailable = function(e) {
+                if (e.data.size > 0) audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = function() {
+                stream.getTracks().forEach(function(t) { t.stop(); });
+                stopWaveform();
+                var blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+                sendForTranscription(blob);
+            };
+
+            mediaRecorder.start(250); // collect chunks every 250ms
+            recordingStart = Date.now();
+            startTimer();
+            startWaveform(stream);
+
+            document.getElementById('btn-record').disabled = true;
+            document.getElementById('btn-stop').disabled = false;
+            document.getElementById('recording-status').textContent = 'Recording...';
+            document.getElementById('recording-status').classList.remove('text-gray-400');
+            document.getElementById('recording-status').classList.add('text-red-600');
+        }).catch(function(err) {
+            alert('Microphone access denied: ' + err.message);
+        });
+    };
+
+    window.stopRecording = function() {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+        }
+        stopTimer();
+        document.getElementById('btn-record').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+        document.getElementById('recording-status').textContent = 'Processing...';
+        document.getElementById('recording-status').classList.remove('text-red-600');
+        document.getElementById('recording-status').classList.add('text-amber-600');
+    };
+
+    function getBestMimeType() {
+        var types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+        for (var i = 0; i < types.length; i++) {
+            if (MediaRecorder.isTypeSupported(types[i])) return types[i];
+        }
+        return '';
+    }
+
+    // ── Timer ──
+
+    function startTimer() {
+        updateTimer();
+        timerInterval = setInterval(updateTimer, 1000);
+    }
+
+    function stopTimer() {
+        if (timerInterval) clearInterval(timerInterval);
+    }
+
+    function updateTimer() {
+        if (!recordingStart) return;
+        var elapsed = Math.floor((Date.now() - recordingStart) / 1000);
+        var min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        var sec = String(elapsed % 60).padStart(2, '0');
+        document.getElementById('recording-time').textContent = min + ':' + sec;
+    }
+
+    // ── Waveform ──
+
+    function startWaveform(stream) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        var source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        drawWaveform();
+    }
+
+    function drawWaveform() {
+        if (!analyser) return;
+        var canvas = document.getElementById('waveform');
+        var ctx = canvas.getContext('2d');
+        var bufLen = analyser.frequencyBinCount;
+        var data = new Uint8Array(bufLen);
+
+        canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+        canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
+        ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+        var W = canvas.offsetWidth;
+        var H = canvas.offsetHeight;
+
+        function draw() {
+            animFrame = requestAnimationFrame(draw);
+            analyser.getByteTimeDomainData(data);
+
+            ctx.fillStyle = '#111827';
+            ctx.fillRect(0, 0, W, H);
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#818cf8';
+            ctx.beginPath();
+
+            var sliceW = W / bufLen;
+            var x = 0;
+            for (var i = 0; i < bufLen; i++) {
+                var v = data[i] / 128.0;
+                var y = v * H / 2;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+                x += sliceW;
+            }
+            ctx.lineTo(W, H / 2);
+            ctx.stroke();
+        }
+        draw();
+    }
+
+    function stopWaveform() {
+        if (animFrame) cancelAnimationFrame(animFrame);
+        if (audioContext) audioContext.close();
+        analyser = null;
+        audioContext = null;
+    }
+
+    // ── Transcription ──
+
+    function sendForTranscription(blob) {
+        var formData = new FormData();
+        formData.append('audio', blob, 'dictation.webm');
+        formData.append('modality_code', MODALITY || '');
+        formData.append('procedure_description', PROCEDURE || '');
+        formData.append('doctor_code', DOCTOR_CODE || '');
+        formData.append('patient_name', PATIENT_NAME || '');
+
+        var audioDuration = recordingStart ? Math.round((Date.now() - recordingStart) / 1000) : 0;
+
+        fetch('/voice/transcribe', { method: 'POST', body: formData })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    document.getElementById('report-text').innerHTML =
+                        '<span class="text-red-600">Error: ' + escapeHtml(data.error) + '</span>';
+                    document.getElementById('recording-status').textContent = 'Error';
+                    return;
+                }
+
+                currentFormattedText = data.formatted_text;
+                var el = document.getElementById('report-text');
+                el.textContent = data.formatted_text;
+                formatReportDisplay(el);
+
+                // Show buttons
+                document.getElementById('edit-toggle-btn').classList.remove('hidden');
+                document.getElementById('copy-btn').classList.remove('hidden');
+
+                // Show processing info
+                document.getElementById('processing-info').classList.remove('hidden');
+                document.getElementById('info-confidence').textContent =
+                    data.confidence ? (data.confidence * 100).toFixed(1) + '%' : '—';
+                document.getElementById('info-time').textContent =
+                    data.processing_ms ? (data.processing_ms / 1000).toFixed(1) + 's' : '—';
+                document.getElementById('info-duration').textContent = audioDuration + 's';
+
+                document.getElementById('recording-status').textContent = 'Complete';
+                document.getElementById('recording-status').classList.remove('text-amber-600');
+                document.getElementById('recording-status').classList.add('text-green-600');
+            })
+            .catch(function(err) {
+                document.getElementById('report-text').innerHTML =
+                    '<span class="text-red-600">Network error: ' + escapeHtml(err.message) + '</span>';
+                document.getElementById('recording-status').textContent = 'Error';
+            });
+    }
+
+    // ── Report formatting display ──
+
+    var _HEADING_PATTERNS = /^(Clinical History:|Clinical Details:|Technique:|Findings:|FINDINGS:|Report:|REPORT:|CONCLUSION:|COMMENT:|Impression:|IMPRESSION:|Comment:)\s*$/i;
+
+    function formatReportDisplay(el) {
+        if (!el) return;
+        var html = el.innerHTML;
+        var lines = html.split('\n');
+        var result = [];
+        var isFirstLine = true;
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            var stripped = line.replace(/<[^>]*>/g, '').trim();
+            if (!stripped) { result.push(line); continue; }
+
+            if (isFirstLine && stripped === stripped.toUpperCase() && stripped.length > 2) {
+                result.push('<span class="report-title">' + line + '</span>');
+                isFirstLine = false;
+                continue;
+            }
+            isFirstLine = false;
+
+            if (_HEADING_PATTERNS.test(stripped)) {
+                result.push('<span class="report-heading">' + line + '</span>');
+            } else {
+                result.push(line);
+            }
+        }
+        el.innerHTML = result.join('\n');
+    }
+
+    function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    // ── Edit mode ──
+
+    window.toggleEdit = function() {
+        if (isEditing) { cancelEdit(); return; }
+        isEditing = true;
+        document.getElementById('edit-textarea').value = document.getElementById('report-text').textContent;
+        document.getElementById('view-mode').classList.add('hidden');
+        document.getElementById('edit-mode').classList.remove('hidden');
+        document.getElementById('edit-toggle-label').textContent = 'Cancel Edit';
+        document.getElementById('edit-textarea').focus();
+    };
+
+    window.cancelEdit = function() {
+        isEditing = false;
+        document.getElementById('view-mode').classList.remove('hidden');
+        document.getElementById('edit-mode').classList.add('hidden');
+        document.getElementById('edit-toggle-label').textContent = 'Edit';
+    };
+
+    window.saveEdit = function() {
+        var text = document.getElementById('edit-textarea').value;
+        currentFormattedText = text;
+        var el = document.getElementById('report-text');
+        el.textContent = text;
+        formatReportDisplay(el);
+        cancelEdit();
+        // Flash green border
+        var card = document.getElementById('report-card');
+        card.style.boxShadow = '0 0 0 2px #22c55e';
+        setTimeout(function() { card.style.boxShadow = ''; }, 1500);
+    };
+
+    // ── Copy ──
+
+    window.copyReport = function() {
+        var text = document.getElementById('report-text').textContent;
+        navigator.clipboard.writeText(text).then(function() {
+            var label = document.getElementById('copy-label');
+            label.textContent = 'Copied!';
+            setTimeout(function() { label.textContent = 'Copy Report'; }, 2000);
+        }).catch(function() {
+            var range = document.createRange();
+            range.selectNodeContents(document.getElementById('report-text'));
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand('copy');
+            sel.removeAllRanges();
+            var label = document.getElementById('copy-label');
+            label.textContent = 'Copied!';
+            setTimeout(function() { label.textContent = 'Copy Report'; }, 2000);
+        });
+    };
+
+    // ── Keyboard shortcuts ──
+
+    document.addEventListener('keydown', function(e) {
+        var tag = document.activeElement.tagName;
+        var inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+        if (e.code === 'Escape' && isEditing) cancelEdit();
+
+        if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey) && isEditing) {
+            e.preventDefault();
+            saveEdit();
+        }
+    });
+
+})();
+</script>
+{% endblock %}

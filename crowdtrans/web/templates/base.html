@@ -16,14 +16,20 @@
             <div class="flex items-center justify-between h-16">
                 <div class="flex items-center space-x-8">
                     <a href="/" class="text-white font-bold text-xl tracking-tight">CrowdScription</a>
-                    <a href="/" class="text-indigo-100 hover:text-white text-sm font-medium">Dashboard</a>
+                    <a href="/dashboard" class="text-indigo-100 hover:text-white text-sm font-medium">Dashboard</a>
                     <a href="/worklist/" class="text-indigo-100 hover:text-white text-sm font-medium">Worklist</a>
+                    <a href="/voice/" class="text-indigo-100 hover:text-white text-sm font-medium">Voice</a>
                     <a href="/transcriptions/" class="text-indigo-100 hover:text-white text-sm font-medium">Transcriptions</a>
                     <a href="/compare/" class="text-indigo-100 hover:text-white text-sm font-medium">Compare</a>
                     <a href="/learning/" class="text-indigo-100 hover:text-white text-sm font-medium">Learning</a>
                     <a href="/settings/" class="text-indigo-100 hover:text-white text-sm font-medium">Settings</a>
                 </div>
-                <div class="text-indigo-200 text-xs">Radiology Dictation Transcription</div>
+                <div class="flex items-center space-x-4">
+                    {% if request.session.get("user") %}
+                    <span class="text-indigo-200 text-xs">{{ request.session["user"]["display_name"] }}</span>
+                    <a href="/logout" class="text-indigo-300 hover:text-white text-xs font-medium">Logout</a>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </nav>

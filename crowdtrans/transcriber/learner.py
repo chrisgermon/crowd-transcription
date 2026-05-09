@@ -432,12 +432,14 @@ def run_learning(limit: int = 0, reformat: bool = True) -> dict[str, Any]:
                 .all()
             )
             for i, txn in enumerate(txns, 1):
+                _pn = " ".join(p for p in [txn.patient_given_names, txn.patient_family_name] if p) or None
                 txn.formatted_text = format_transcript(
                     txn.transcript_text,
                     modality_code=txn.modality_code,
                     procedure_description=txn.procedure_description,
                     clinical_history=txn.complaint,
                     doctor_id=txn.doctor_id,
+                    patient_name=_pn,
                 )
                 if i % 500 == 0:
                     session.commit()

@@ -10,7 +10,7 @@ from crowdtrans.config import SiteConfig
 logger = logging.getLogger(__name__)
 
 DICTATION_QUERY = """\
-SELECT
+SELECT TOP {limit}
     DI.TransactionKey,
     DI.[Key] AS DictationInstanceKey,
     DI.CompletionStatus,
@@ -154,13 +154,8 @@ def fetch_new_dictations(site: SiteConfig, after_id: int, limit: int) -> list[di
     conn = _get_connection(site)
     try:
         with conn.cursor() as cur:
-            # pymssql doesn't support LIMIT, so we fetch and slice
-            cur.execute(DICTATION_QUERY, (after_id,))
-            rows = []
-            for row in cur:
-                rows.append(dict(row))
-                if len(rows) >= limit:
-                    break
+            cur.execute(DICTATION_QUERY.format(limit=int(limit)), (after_id,))
+            rows = [dict(row) for row in cur]
             return rows
     finally:
         conn.close()
@@ -259,6 +254,99 @@ def fetch_reports(site: SiteConfig, transaction_keys: list[int]) -> dict[int, st
                     if text and len(text) > 20:
                         reports[row["DictationTK"]] = text
         return reports
+    finally:
+        conn.close()
+
+
+PRE_DICTATION_REPORT_QUERY = """\
+SELECT TOP 1 E.Buffer
+FROM [Version].[Karisma.Report.InstanceChange] RIC
+JOIN [Version].[Karisma.Report.InstanceValue] RIV
+    ON RIV.ReportInstanceChangeKey = RIC.[Key]
+    AND RIV.ReportDefinitionFieldKey = 1
+JOIN [System].[Extent] E
+    ON E.[Key] = RIV.BlobKey
+WHERE RIC.ReportInstanceKey = %d
+  AND RIC.TransactionKey < %d
+  AND RIV.BlobKey IS NOT NULL
+  AND E.Buffer IS NOT NULL
+ORDER BY RIC.TransactionKey DESC
+"""
+
+
+def fetch_existing_report_content(
+    site: SiteConfig,
+    report_instance_key: int,
+    dictation_transaction_key: int,
+) -> str | None:
+    """Fetch report content that existed before a dictation was recorded.
+
+    For ultrasound studies, the sonographer or typist often pre-populates a
+    report template with measurements and findings before the radiologist
+    dictates. This function retrieves that pre-existing content so the
+    formatter can merge dictation instructions with the template.
+
+    Returns plain text or None if no pre-existing content was found.
+    """
+    if not report_instance_key or not dictation_transaction_key:
+        return None
+    conn = _get_connection(site)
+    try:
+        with conn.cursor(as_dict=False) as cur:
+            cur.execute(
+                PRE_DICTATION_REPORT_QUERY,
+                (report_instance_key, dictation_transaction_key),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                xml_bytes = bytes(row[0])
+                text = _parse_report_xml(xml_bytes)
+                # Only return if there's meaningful content (not just empty template shell)
+                if text and len(text) > 30:
+                    return text
+        return None
+    except Exception as e:
+        logger.warning(
+            "Could not fetch existing report for instance %d: %s",
+            report_instance_key, e,
+        )
+        return None
+    finally:
+        conn.close()
+
+
+def fetch_existing_report_batch(
+    site: SiteConfig,
+    items: list[tuple[int, int, int]],
+) -> dict[int, str]:
+    """Batch-fetch pre-dictation report content for multiple transcriptions.
+
+    items: list of (transcription_id, report_instance_key, dictation_transaction_key)
+    Returns {transcription_id: plain_text} for items that have pre-existing content.
+    """
+    if not items:
+        return {}
+    conn = _get_connection(site)
+    results = {}
+    try:
+        with conn.cursor(as_dict=False) as cur:
+            for txn_id, rik, dtk in items:
+                if not rik or not dtk:
+                    continue
+                try:
+                    cur.execute(PRE_DICTATION_REPORT_QUERY, (rik, dtk))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        xml_bytes = bytes(row[0])
+                        text = _parse_report_xml(xml_bytes)
+                        if text and len(text) > 30:
+                            results[txn_id] = text
+                except Exception as e:
+                    logger.debug(
+                        "Skipped existing report for txn %d (rik=%d): %s",
+                        txn_id, rik, e,
+                    )
+        return results
     finally:
         conn.close()
 
@@ -446,53 +534,73 @@ def fetch_prior_reports(
 # Report templates (per-doctor, per-exam type)
 # ---------------------------------------------------------------------------
 
-REPORT_TEMPLATES_QUERY = """\
-SELECT TOP 5
-    RT.[Name] AS TemplateName,
-    RT.Code AS TemplateCode,
-    RT.Description AS TemplateDescription,
-    E.Buffer AS TemplateBuffer
-FROM [Version].[Karisma.Report.Template] RT
-JOIN [System].[Extent] E ON E.[Key] = RT.BufferKey
-JOIN [Version].[Karisma.Report.Template-ProfileUser] TPU
-    ON TPU.ChildKey = RT.[Key]
-WHERE TPU.ParentKey = %d
-  AND RT.Key_Deleted = 0
-  AND RT.[Name] LIKE %s
-ORDER BY RT.TransactionKey DESC
-"""
-
-REPORT_TEMPLATES_BY_USER_QUERY = """\
-SELECT TOP 10
-    RT.[Name] AS TemplateName,
-    RT.Code AS TemplateCode,
-    RT.Description AS TemplateDescription,
-    E.Buffer AS TemplateBuffer
-FROM [Version].[Karisma.Report.Template] RT
-JOIN [System].[Extent] E ON E.[Key] = RT.BufferKey
-JOIN [Version].[Karisma.Report.Template-ProfileUser] TPU
-    ON TPU.ChildKey = RT.[Key]
-WHERE TPU.ParentKey = %d
-  AND RT.Key_Deleted = 0
-ORDER BY RT.TransactionKey DESC
+REPORT_TEMPLATES_SEARCH_QUERY = """\
+SELECT TOP 15
+    sub.TemplateName,
+    sub.TemplateCode,
+    sub.TemplateDescription,
+    sub.TemplateBuffer
+FROM (
+    SELECT RT.[Name] AS TemplateName,
+           RT.Code AS TemplateCode,
+           RT.Description AS TemplateDescription,
+           E.Buffer AS TemplateBuffer,
+           ROW_NUMBER() OVER (PARTITION BY RT.[Name] ORDER BY RT.TransactionKey DESC) AS rn
+    FROM [Version].[Karisma.Report.Template] RT
+    JOIN [System].[Extent] E ON E.[Key] = RT.BufferKey
+    WHERE RT.Key_Deleted = 0
+      AND ({conditions})
+) sub
+WHERE sub.rn = 1
+ORDER BY sub.TemplateName
 """
 
 
 def fetch_report_templates(
-    site: SiteConfig, dictator_user_key: int, service_name: str | None = None
+    site: SiteConfig,
+    doctor_surname: str | None = None,
+    procedure_desc: str | None = None,
+    **_kwargs,
 ) -> list[dict[str, str]]:
-    """Fetch report templates for a doctor, optionally filtered by service name."""
-    if not dictator_user_key:
+    """Search report templates by doctor surname and/or procedure keywords."""
+    conditions = []
+    params: list[str] = []
+
+    if doctor_surname:
+        # Match templates whose name or description contains the doctor's surname
+        conditions.append(
+            "(RT.[Name] LIKE %s OR RT.Description LIKE %s)"
+        )
+        pat = f"%{doctor_surname}%"
+        params.extend([pat, pat])
+
+    if procedure_desc:
+        # Extract meaningful keywords from procedure (e.g. "US SHOULDER RIGHT" -> shoulder)
+        stop = {"us", "ct", "mr", "mri", "xr", "xray", "left", "right", "bilateral",
+                "with", "without", "contrast", "and", "of", "the"}
+        keywords = [
+            w for w in procedure_desc.split()
+            if len(w) > 2 and w.lower() not in stop
+        ]
+        for kw in keywords[:3]:
+            conditions.append(
+                "(RT.[Name] LIKE %s OR RT.Description LIKE %s)"
+            )
+            pat = f"%{kw}%"
+            params.extend([pat, pat])
+
+    if not conditions:
         return []
+
+    query = REPORT_TEMPLATES_SEARCH_QUERY.format(
+        conditions=" AND ".join(conditions)
+    )
+
     conn = _get_connection(site)
     try:
         result = []
         with conn.cursor(as_dict=True) as cur:
-            if service_name:
-                pattern = f"%{service_name.split()[0] if service_name else ''}%"
-                cur.execute(REPORT_TEMPLATES_QUERY, (dictator_user_key, pattern))
-            else:
-                cur.execute(REPORT_TEMPLATES_BY_USER_QUERY, (dictator_user_key,))
+            cur.execute(query, tuple(params))
             for row in cur:
                 entry = {
                     "name": row["TemplateName"],
@@ -515,7 +623,7 @@ def fetch_report_templates(
 # ---------------------------------------------------------------------------
 
 DICTIONARY_QUERY = """\
-SELECT DISTINCT [Word]
+SELECT DISTINCT TOP 5000 [Word]
 FROM [Version].[Karisma.Document.Dictionary]
 WHERE Key_Deleted = 0
   AND LEN([Word]) > 3
@@ -561,6 +669,161 @@ def fetch_practitioner_details(site: SiteConfig, practitioner_code: str) -> dict
             return dict(row) if row else None
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Undictated studies (registered/imaged but no report yet)
+# ---------------------------------------------------------------------------
+
+UNDICTATED_STUDIES_QUERY = """\
+SELECT TOP {limit}
+    RS.[Key] AS ServiceKey,
+    RS.AccessionNumber,
+    RS.RequestRecordKey,
+
+    RR.InternalIdentifier,
+    RR.AuditRegisteredDate AS RegisteredDate,
+    RR.AuditScheduledDate AS ScheduledDate,
+    RR.DefaultReportingPractitionerKey,
+
+    PN.Title AS PatientTitle,
+    PN.FirstName AS PatientFirstName,
+    PN.Surname AS PatientLastName,
+    PR.BirthDate AS PatientDOB,
+
+    PTID.Value AS PatientId,
+
+    SD.[Name] AS ServiceName,
+    SD.Code AS ServiceCode,
+    SM.Code AS ModalityCode,
+    SM.[Name] AS ModalityName,
+
+    WS.[Key] AS WorkSiteKey,
+    WS.[Name] AS WorkSiteName,
+    WS.Code AS WorkSiteCode,
+
+    PRAC.Title AS PractitionerTitle,
+    PRAC.FirstName AS PractitionerFirstName,
+    PRAC.Surname AS PractitionerSurname,
+    PRAC.Code AS PractitionerCode
+
+FROM [Version].[Karisma.Request.Service] RS
+
+JOIN [Version].[Karisma.Request.Record] RR
+    ON RR.[Key] = RS.RequestRecordKey
+    AND RR.Key_Deleted = 0
+    AND RR.IsDiscarded = 0
+    AND RR.Registered = 1
+
+LEFT JOIN [Version].[Karisma.Service.Definition] SD
+    ON RS.PerformedServiceDefinitionKey = SD.[Key]
+LEFT JOIN [Version].[Karisma.Service.Modality] SM
+    ON SD.ServiceModalityKey = SM.[Key]
+
+LEFT JOIN [Version].[Karisma.Patient.Record] PR
+    ON RR.PatientKey = PR.[Key]
+LEFT JOIN [Version].[Karisma.Patient.Name] PN
+    ON PN.[Key] = PR.PreferredNameKey
+
+OUTER APPLY (
+    SELECT TOP 1 PI.Value
+    FROM [Version].[Karisma.Patient.Identifier] PI
+    WHERE PI.PatientRecordKey = PR.[Key]
+      AND PI.Preferred = 1
+      AND PI.IsDiscarded = 0
+      AND PI.Key_Deleted = 0
+    ORDER BY PI.TransactionKey DESC
+) PTID
+
+LEFT JOIN [Version].[Karisma.Work.Site] WS
+    ON RR.WorkSiteKey = WS.[Key]
+
+LEFT JOIN [Version].[Karisma.Practitioner.Record] PRAC
+    ON PRAC.[Key] = RR.DefaultReportingPractitionerKey
+    AND PRAC.Key_Deleted = 0
+
+WHERE RS.IsDiscarded = 0
+  AND RS.Key_Deleted = 0
+  AND RS.ReportInstanceKey = 0
+
+  AND RR.AuditScheduledDate >= DATEADD(day, -7, GETDATE())
+
+ORDER BY RR.AuditRegisteredDate DESC
+"""
+
+
+def fetch_undictated_studies(
+    site: SiteConfig,
+    limit: int = 500,
+    excluded_worksites: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch registered studies that have no report yet (ready for dictation).
+
+    Limited to studies scheduled in the last 7 days for performance.
+    """
+    conn = _get_connection(site)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(UNDICTATED_STUDIES_QUERY.format(limit=int(limit)))
+            rows = []
+            for row in cur:
+                r = dict(row)
+                if excluded_worksites and r.get("WorkSiteName") in excluded_worksites:
+                    continue
+                rows.append(r)
+            return rows
+    finally:
+        conn.close()
+
+
+def sync_pending_studies(site_id: str, site: SiteConfig, excluded_worksites: set[str] | None = None) -> int:
+    """Sync undictated studies from Karisma into local PendingStudy cache.
+
+    Replaces all cached studies for this site with fresh data.
+    Returns the number of studies synced.
+    """
+    import datetime
+    from crowdtrans.database import SessionLocal
+    from crowdtrans.models import PendingStudy
+
+    studies = fetch_undictated_studies(site, limit=1000, excluded_worksites=excluded_worksites)
+
+    with SessionLocal() as session:
+        # Delete existing entries for this site
+        session.query(PendingStudy).filter(PendingStudy.site_id == site_id).delete()
+
+        now = datetime.datetime.utcnow()
+        for s in studies:
+            ps = PendingStudy(
+                site_id=site_id,
+                service_key=s.get("ServiceKey"),
+                request_key=s.get("RequestRecordKey"),
+                accession_number=s.get("AccessionNumber") or s.get("InternalIdentifier"),
+                internal_identifier=s.get("InternalIdentifier"),
+                patient_title=s.get("PatientTitle"),
+                patient_first_name=s.get("PatientFirstName"),
+                patient_last_name=s.get("PatientLastName"),
+                patient_id=s.get("PatientId"),
+                patient_dob=str(s["PatientDOB"]) if s.get("PatientDOB") else None,
+                service_name=s.get("ServiceName"),
+                service_code=s.get("ServiceCode"),
+                modality_code=s.get("ModalityCode"),
+                modality_name=s.get("ModalityName"),
+                doctor_code=s.get("PractitionerCode"),
+                doctor_title=s.get("PractitionerTitle"),
+                doctor_first_name=s.get("PractitionerFirstName"),
+                doctor_surname=s.get("PractitionerSurname"),
+                facility_name=s.get("WorkSiteName"),
+                facility_code=s.get("WorkSiteCode"),
+                registered_date=s.get("RegisteredDate"),
+                scheduled_date=s.get("ScheduledDate"),
+                synced_at=now,
+            )
+            session.add(ps)
+        session.commit()
+
+    logger.info("Synced %d pending studies for site %s", len(studies), site_id)
+    return len(studies)
 
 
 def get_min_transaction_key_for_date(site: SiteConfig, date_str: str) -> int:

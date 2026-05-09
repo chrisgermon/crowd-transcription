@@ -317,6 +317,7 @@ def llm_format(
     procedure_description: str | None = None,
     clinical_history: str | None = None,
     doctor_id: str | None = None,
+    existing_report_text: str | None = None,
 ) -> LLMFormatResult:
     """Format a raw Deepgram transcript using Claude.
 
@@ -326,6 +327,10 @@ def llm_format(
         procedure_description: Procedure name from the RIS order.
         clinical_history: Clinical notes / complaint from the referral.
         doctor_id: Doctor ID for profile-based customisation.
+        existing_report_text: Pre-populated report content from the RIS
+            (e.g. sonographer template with measurements). When present,
+            the dictation contains editing instructions rather than a
+            full report dictation.
 
     Returns:
         LLMFormatResult with the formatted report and usage metrics.
@@ -363,6 +368,28 @@ def llm_format(
             "— every line flows directly to the next with single newlines only.\n"
         )
 
+    # When a pre-populated report template exists, add merge instructions
+    if existing_report_text:
+        system += """
+
+## IMPORTANT: Pre-populated Report Template
+
+A report template has already been partially filled in (e.g. by the sonographer with measurements and preliminary findings) BEFORE the radiologist dictated. The radiologist's dictation contains EDITING INSTRUCTIONS for this template, NOT a complete standalone report.
+
+You must MERGE the dictation instructions with the existing template. Common patterns:
+- "reports already there" / "report is already there" — the template content is the base; the dictation only adds/modifies specific parts
+- "use my standard template" / "use my template" — apply the radiologist's standard template, incorporating the dictated changes
+- "please add [text]" — add the specified text to the appropriate section
+- "please change [X] to [Y]" / "change the [X] put in [Y]" — replace X with Y in the template
+- "copy the clinical notes" — the clinical history from the referral should be placed under CLINICAL HISTORY
+- "conclusion is [text]" / "in conclusion [text]" — set or update the CONCLUSION section
+- "for the [section], please add [text]" — add to a specific section
+- "delete the [section]" / "remove [text]" — remove content from the template
+- "[patient name] [procedure]" at the start — strip the patient name and procedure echo
+
+Start with the existing template as the base and apply the dictation instructions to produce the final report. Strip all meta-commands (the instructions themselves) from the output — only include the resulting clinical content.
+"""
+
     # Build user message
     parts = []
     if procedure_description:
@@ -371,6 +398,8 @@ def llm_format(
         parts.append(f"Clinical history: {clinical_history}")
     if modality_code:
         parts.append(f"Modality: {modality_code}")
+    if existing_report_text:
+        parts.append(f"\nExisting report template (pre-populated before dictation):\n{existing_report_text}")
     parts.append(f"\nRaw transcript:\n{raw_text}")
 
     user_message = "\n".join(parts)

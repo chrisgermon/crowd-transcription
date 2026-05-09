@@ -234,6 +234,8 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             extent_key=row.get("ContentKey"),
             extent_offset=None,
             extent_length=None,
+            report_instance_key=row.get("ReportInstanceKey"),
+            report_process_status=row.get("ReportProcessStatus"),
             patient_id=str(row["PatientKey"]) if row.get("PatientKey") else None,
             patient_ur=row.get("PatientId"),
             patient_title=row.get("PatientTitle"),
@@ -283,7 +285,7 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
 
 
 def _process_karisma(session, site: SiteConfig, txn: Transcription) -> bool:
-    from crowdtrans.karisma import fetch_audio_blob
+    from crowdtrans.karisma import fetch_audio_blob, fetch_existing_report_content
     from crowdtrans.transcriber.audio import process_karisma_blob
 
     if not txn.extent_key:
@@ -307,6 +309,21 @@ def _process_karisma(session, site: SiteConfig, txn: Transcription) -> bool:
         txn.retry_count += 1
         session.commit()
         return False
+
+    # Fetch pre-populated report content (sonographer template) if available
+    if txn.report_instance_key and not txn.existing_report_text:
+        try:
+            existing = fetch_existing_report_content(
+                site, txn.report_instance_key, txn.source_dictation_id,
+            )
+            if existing:
+                txn.existing_report_text = existing
+                logger.info(
+                    "[%s] Found existing report content for dictation %d (%d chars)",
+                    site.site_id, txn.source_dictation_id, len(existing),
+                )
+        except Exception:
+            logger.debug("Could not fetch existing report for dictation %d", txn.source_dictation_id)
 
     keyterms = _build_keyterms(txn)
 
@@ -387,12 +404,18 @@ def _store_result(session, site: SiteConfig, txn: Transcription, result):
     txn.transcript_text = result.transcript_text
 
     # Hybrid formatter: regex always runs, LLM runs if enabled
+    # Build patient name for stripping from transcript body
+    _name_parts = [txn.patient_given_names, txn.patient_family_name]
+    _patient_name = " ".join(p for p in _name_parts if p) or None
+
     regex_text, llm_result, method = format_transcript_hybrid(
         result.transcript_text,
         modality_code=txn.modality_code,
         procedure_description=txn.procedure_description,
         clinical_history=txn.complaint,
         doctor_id=txn.doctor_id,
+        patient_name=_patient_name,
+        existing_report_text=txn.existing_report_text,
     )
     txn.formatted_text = regex_text
     txn.formatting_method = method
@@ -489,12 +512,14 @@ def _backfill_patient_data(session, site: SiteConfig):
 
         # Re-format transcript with the new context data
         if txn.transcript_text and txn.status == "complete" and clinical:
+            _pn = " ".join(p for p in [txn.patient_given_names, txn.patient_family_name] if p) or None
             txn.formatted_text = format_transcript(
                 txn.transcript_text,
                 modality_code=txn.modality_code,
                 procedure_description=txn.procedure_description,
                 clinical_history=txn.complaint,
                 doctor_id=txn.doctor_id,
+                patient_name=_pn,
             )
             reformatted += 1
 
@@ -599,8 +624,8 @@ def run(site_id: str | None = None):
                     processed = _process_pending(session, site)
                     if discovered > 0 or processed > 0:
                         any_work = True
-                    # Periodic backfill of patient data for dictations discovered before notes existed
-                    _backfill_patient_data(session, site)
+                    # Backfill disabled — only process new dictations
+                    # _backfill_patient_data(session, site)
             except Exception:
                 logger.exception("[%s] Error in polling loop", site.site_id)
 

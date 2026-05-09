@@ -166,6 +166,110 @@ def _get_doctor_footer_template(doctor_id: str | None) -> str | None:
     return profile.get("footer_template") or None
 
 
+# ---------------------------------------------------------------------------
+# Radiologist signature blocks (from settings DB)
+# ---------------------------------------------------------------------------
+
+_RADIOLOGIST_CACHE: dict | None = None
+
+
+def _load_radiologist_signatures() -> dict[str, str]:
+    """Load radiologist signature blocks from DB. Cached after first load.
+
+    Returns a dict mapping doctor_code -> signature_text.
+    """
+    global _RADIOLOGIST_CACHE
+    if _RADIOLOGIST_CACHE is not None:
+        return _RADIOLOGIST_CACHE
+    try:
+        from crowdtrans.database import SessionLocal
+        from crowdtrans.models import Radiologist
+        with SessionLocal() as session:
+            rows = session.query(Radiologist).filter(
+                Radiologist.enabled.is_(True),
+                Radiologist.signature_text.isnot(None),
+            ).all()
+            _RADIOLOGIST_CACHE = {}
+            for r in rows:
+                if r.doctor_code and r.signature_text:
+                    _RADIOLOGIST_CACHE[str(r.doctor_code)] = r.signature_text
+            logger.info("Loaded %d radiologist signatures", len(_RADIOLOGIST_CACHE))
+    except Exception as e:
+        logger.warning("Failed to load radiologist signatures: %s", e)
+        _RADIOLOGIST_CACHE = {}
+    return _RADIOLOGIST_CACHE
+
+
+def _clear_radiologist_cache():
+    """Clear cached radiologist signatures (called when settings change)."""
+    global _RADIOLOGIST_CACHE
+    _RADIOLOGIST_CACHE = None
+
+
+def _get_radiologist_signature(doctor_id: str | None) -> str | None:
+    """Get the signature block for a doctor from the settings DB."""
+    if not doctor_id:
+        return None
+    sigs = _load_radiologist_signatures()
+    return sigs.get(str(doctor_id))
+
+
+# ---------------------------------------------------------------------------
+# User-defined word replacements (from settings DB)
+# ---------------------------------------------------------------------------
+
+_WORD_REPLACEMENT_CACHE: dict | None = None
+
+
+def _load_word_replacements() -> dict[str | None, list[tuple[re.Pattern, str]]]:
+    """Load user-defined word replacements from DB. Cached after first load.
+
+    Returns a dict mapping doctor_id (or None for global) to list of (pattern, replacement).
+    """
+    global _WORD_REPLACEMENT_CACHE
+    if _WORD_REPLACEMENT_CACHE is not None:
+        return _WORD_REPLACEMENT_CACHE
+    try:
+        from crowdtrans.database import SessionLocal
+        from crowdtrans.models import WordReplacement
+        with SessionLocal() as session:
+            rows = session.query(WordReplacement).filter(
+                WordReplacement.enabled.is_(True),
+            ).all()
+            _WORD_REPLACEMENT_CACHE = {}
+            for r in rows:
+                key = str(r.doctor_id) if r.doctor_id else None
+                if key not in _WORD_REPLACEMENT_CACHE:
+                    _WORD_REPLACEMENT_CACHE[key] = []
+                pattern = re.compile(r'\b' + re.escape(r.original) + r'\b', re.IGNORECASE)
+                _WORD_REPLACEMENT_CACHE[key].append((pattern, r.replacement))
+            total = sum(len(v) for v in _WORD_REPLACEMENT_CACHE.values())
+            logger.info("Loaded %d user word replacements", total)
+    except Exception as e:
+        logger.warning("Failed to load word replacements: %s", e)
+        _WORD_REPLACEMENT_CACHE = {}
+    return _WORD_REPLACEMENT_CACHE
+
+
+def _clear_word_replacement_cache():
+    """Clear cached word replacements (called when settings change)."""
+    global _WORD_REPLACEMENT_CACHE
+    _WORD_REPLACEMENT_CACHE = None
+
+
+def _apply_word_replacements(text: str, doctor_id: str | None) -> str:
+    """Apply user-defined word replacements (global + doctor-specific)."""
+    replacements = _load_word_replacements()
+    # Apply global replacements first
+    for pattern, repl in replacements.get(None, []):
+        text = pattern.sub(repl, text)
+    # Apply doctor-specific replacements
+    if doctor_id:
+        for pattern, repl in replacements.get(str(doctor_id), []):
+            text = pattern.sub(repl, text)
+    return text
+
+
 # Word corrections that are noise (common function words, not real corrections)
 _CORRECTION_STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "in", "at", "of", "for",
@@ -973,6 +1077,67 @@ def reload_custom_corrections():
     _load_custom_corrections()
 
 
+# ---------------------------------------------------------------------------
+# Medical acronym uppercasing — Deepgram sometimes outputs lowercase acronyms
+# ---------------------------------------------------------------------------
+
+_MEDICAL_ACRONYMS = [
+    # Imaging modalities
+    "MRI", "CT", "US", "BMD", "CR", "DXA", "DEXA", "PET", "SPECT", "DSA",
+    "MRA", "MRV", "CTA", "HRCT", "LDCT", "CBCT",
+    # Common procedures / studies
+    "IVP", "IVU", "MCU", "MCUG", "VCUG", "HSG", "ERCP", "MRCP",
+    "ECG", "EEG", "EMG",
+    # Anatomy / clinical
+    "ACL", "PCL", "MCL", "LCL", "ACJ", "SCJ", "TMJ", "SIJ",
+    "ATFL", "CFL", "PTFL",
+    "CBD", "CHD", "IVC", "SVC", "AV", "MV", "TV",
+    "LV", "RV", "LA", "RA", "LVEF",
+    "CSF", "CNS", "PNS",
+    "AP", "PA", "SI", "RL",
+    "PIPJ", "DIPJ", "MCPJ", "MTPJ", "IPJ",
+    "IP", "DIP", "PIP", "MCP", "MTP", "CMC",
+    # Common clinical terms
+    "DVT", "PE", "MI", "CVA", "TIA", "COPD", "UTI", "HIV", "HBV", "HCV",
+    "CKD", "AKI", "GORD", "GERD", "IBD", "IBS",
+    "AAA", "TAA", "ASD", "VSD", "PDA", "PFO",
+    "NAD", "OA", "RA", "SLE", "GCA",
+    "PSA", "AFP", "CEA", "CA", "HCG", "TSH", "FSH", "LH",
+    "BMI", "BP", "HR", "RR", "GCS",
+    "FAST", "CXR",
+    # Contrast / drugs
+    "IV", "IM", "SC", "PO", "PR",
+    "NSAID", "NSAIDs",
+    # Report structure
+    "CC", "GP",
+]
+
+# Build a case-insensitive pattern for each acronym — match as whole word only
+_ACRONYM_PATTERNS: list[tuple[re.Pattern, str]] = []
+for _acr in _MEDICAL_ACRONYMS:
+    _ACRONYM_PATTERNS.append(
+        (re.compile(r'\b' + re.escape(_acr) + r'\b', re.IGNORECASE), _acr)
+    )
+# Multi-word acronym phrases (e.g. "ct ivp" -> "CT IVP")
+_MULTI_ACRONYM_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\bct\s+ivp\b', re.IGNORECASE), 'CT IVP'),
+    (re.compile(r'\bct\s+kub\b', re.IGNORECASE), 'CT KUB'),
+    (re.compile(r'\bct\s+brain\b', re.IGNORECASE), 'CT brain'),
+    (re.compile(r'\bmri\s+brain\b', re.IGNORECASE), 'MRI brain'),
+    (re.compile(r'\biv\s+contrast\b', re.IGNORECASE), 'IV contrast'),
+]
+
+
+def _uppercase_medical_acronyms(text: str) -> str:
+    """Uppercase known medical acronyms that Deepgram may output in lowercase."""
+    # Multi-word patterns first (so "ct ivp" becomes "CT IVP" not "CT ivp")
+    for pattern, replacement in _MULTI_ACRONYM_PATTERNS:
+        text = pattern.sub(replacement, text)
+    for pattern, replacement in _ACRONYM_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def apply_medical_corrections(text: str) -> str:
     """Apply medical term corrections learned from transcript-report comparison."""
     for pattern, replacement in _MEDICAL_CORRECTIONS:
@@ -1008,6 +1173,59 @@ _MODALITY_EXPANSIONS = {
     "bmd": "bone densitometry|dexa|dxa|bone density|bmd",
     "dsa": "angiography|angiogram|dsa",
 }
+
+
+def _strip_patient_name(text: str, patient_name: str) -> str:
+    """Remove mentions of the patient's name from the transcript text.
+
+    Radiologists sometimes dictate the patient's name at the start of a report
+    (e.g. "Bernadette Clark CT calcium score..."). The patient name should not
+    appear in the report content — it's metadata, not clinical content.
+
+    Strips occurrences anywhere in the text, not just at the start, since a
+    radiologist may say the name mid-dictation as well.
+    """
+    if not patient_name or not patient_name.strip():
+        return text
+
+    # Build name parts, ignoring empty segments
+    name_parts = [p.strip() for p in patient_name.split() if p.strip()]
+    if not name_parts:
+        return text
+
+    # Skip very short names (1-2 chars) that would cause false positives
+    name_parts = [p for p in name_parts if len(p) > 2]
+    if not name_parts:
+        return text
+
+    # Build patterns for full name in any order (given+family or family+given)
+    # and also individual name parts that are long enough to be unambiguous
+    patterns_to_strip = []
+
+    # Full name (all parts in the given order) — e.g. "Bernadette Clark"
+    if len(name_parts) >= 2:
+        full_pattern = r'\s+'.join(re.escape(p) for p in name_parts)
+        patterns_to_strip.append(full_pattern)
+        # Reversed order — e.g. "Clark Bernadette"
+        reversed_pattern = r'\s+'.join(re.escape(p) for p in reversed(name_parts))
+        if reversed_pattern != full_pattern:
+            patterns_to_strip.append(reversed_pattern)
+
+    for pattern_str in patterns_to_strip:
+        # Match the name optionally followed by punctuation/spacing
+        pat = re.compile(
+            pattern_str + r'[\s,.\-]*',
+            re.IGNORECASE,
+        )
+        text = pat.sub('', text)
+
+    # Clean up any resulting double spaces or leading whitespace
+    text = re.sub(r'[ \t]{2,}', ' ', text).strip()
+    # Re-capitalise if we stripped from the very start
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+
+    return text
 
 
 def _strip_procedure_echo(text: str, procedure_description: str) -> str:
@@ -1088,6 +1306,7 @@ def add_section_headings(
     procedure_description: str | None = None,
     clinical_history: str | None = None,
     doctor_id: str | None = None,
+    patient_name: str | None = None,
 ) -> str:
     """Add section headings using content-based classification.
 
@@ -1121,6 +1340,11 @@ def add_section_headings(
         )
         lines.append(ch_heading)
         lines.append(clinical_history.strip())
+
+    # Strip patient name from transcript body — it's metadata, not report content.
+    # Dictators sometimes say "Bernadette Clark CT calcium score..." at the start.
+    if patient_name:
+        text = _strip_patient_name(text, patient_name)
 
     # Strip procedure description from transcript body to prevent duplication.
     # Dictators commonly start with "Ultrasound of the left shoulder. The findings
@@ -1252,6 +1476,7 @@ def format_transcript(
     procedure_description: str | None = None,
     clinical_history: str | None = None,
     doctor_id: str | None = None,
+    patient_name: str | None = None,
 ) -> str:
     """Full formatting pipeline: spoken commands -> corrections -> sections -> headings.
 
@@ -1264,6 +1489,9 @@ def format_transcript(
     """
     text = apply_spoken_commands(text)
     text = apply_medical_corrections(text)
+    text = _uppercase_medical_acronyms(text)
+    # Apply user-defined word replacements (global + per-doctor)
+    text = _apply_word_replacements(text, doctor_id)
     # Apply doctor-specific word corrections from profile
     doctor_corrections = _get_doctor_word_corrections(doctor_id, modality_code)
     for pattern, replacement in doctor_corrections:
@@ -1278,6 +1506,7 @@ def format_transcript(
         procedure_description,
         clinical_history,
         doctor_id,
+        patient_name,
     )
     # Final cleanup pass: capitalise after periods/newlines, fix spacing
     text = re.sub(r'(\.\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
@@ -1285,8 +1514,18 @@ def format_transcript(
     # Clean up orphaned periods and double spaces
     text = re.sub(r'\.\s+\.', '.', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
-    # Match RIS report format: NO blank lines anywhere, single newlines only
+    # Collapse multiple blank lines to single newlines
     text = re.sub(r'\n{2,}', '\n', text)
+    # Add blank line before section headings for visual separation
+    text = re.sub(
+        r'\n((?:Clinical History:|Clinical Details:|Technique:|Findings:|FINDINGS:|'
+        r'Report:|REPORT:|CONCLUSION:|COMMENT:|Impression:|IMPRESSION:|Comment:)\s*\n)',
+        r'\n\n\1', text
+    )
+    # Append radiologist signature block if configured
+    signature = _get_radiologist_signature(doctor_id)
+    if signature:
+        text = text.rstrip() + "\n\n" + signature.strip()
     return text
 
 
@@ -1302,6 +1541,8 @@ def format_transcript_hybrid(
     procedure_description: str | None = None,
     clinical_history: str | None = None,
     doctor_id: str | None = None,
+    patient_name: str | None = None,
+    existing_report_text: str | None = None,
 ) -> tuple[str, "LLMFormatResult | None", str]:
     """Two-pass formatting: regex (always) + LLM (if enabled).
 
@@ -1315,16 +1556,22 @@ def format_transcript_hybrid(
     # Always run regex pipeline (fast, free, deterministic)
     regex_result = format_transcript(
         text, modality_code, procedure_description, clinical_history, doctor_id,
+        patient_name,
     )
 
     store = get_config_store()
     mode = store.get_global("llm_mode") or "off"
 
-    if mode == "off":
+    # When pre-populated report content exists, force LLM mode — the dictation
+    # contains editing instructions that only the LLM can intelligently merge
+    # with the template. Regex formatting alone can't handle this workflow.
+    force_llm = bool(existing_report_text)
+
+    if mode == "off" and not force_llm:
         return regex_result, None, "regex"
 
-    # A/B test: randomly skip LLM for some transcriptions
-    if mode == "ab_test":
+    # A/B test: randomly skip LLM for some transcriptions (but not template merges)
+    if mode == "ab_test" and not force_llm:
         pct = int(store.get_global("llm_ab_test_pct") or "50")
         if random.randint(1, 100) > pct:
             return regex_result, None, "regex"
@@ -1339,10 +1586,15 @@ def format_transcript_hybrid(
             procedure_description=procedure_description,
             clinical_history=clinical_history,
             doctor_id=doctor_id,
+            existing_report_text=existing_report_text,
         )
         # Ensure LLM output also has no blank lines (match RIS format)
         if llm_result and llm_result.formatted_text:
             llm_result.formatted_text = re.sub(r'\n{2,}', '\n', llm_result.formatted_text)
+            # Append radiologist signature block if configured
+            signature = _get_radiologist_signature(doctor_id)
+            if signature:
+                llm_result.formatted_text = llm_result.formatted_text.rstrip() + "\n\n" + signature.strip()
         method = "llm" if mode == "llm_only" else "hybrid"
         return regex_result, llm_result, method
     except Exception as e:

@@ -76,11 +76,16 @@ def run_web():
     from crowdtrans.config import settings
     from crowdtrans.database import init_db
     init_db()
+    ssl_kwargs = {}
+    if settings.ssl_certfile and settings.ssl_keyfile:
+        ssl_kwargs["ssl_certfile"] = settings.ssl_certfile
+        ssl_kwargs["ssl_keyfile"] = settings.ssl_keyfile
     uvicorn.run(
         "crowdtrans.web.app:app",
         host=settings.web_host,
         port=settings.web_port,
         reload=False,
+        **ssl_kwargs,
     )
 
 
@@ -128,12 +133,14 @@ def reformat():
         )
         click.echo(f"Re-formatting {len(txns)} completed transcriptions...")
         for i, txn in enumerate(txns, 1):
+            _pn = " ".join(p for p in [txn.patient_given_names, txn.patient_family_name] if p) or None
             txn.formatted_text = format_transcript(
                 txn.transcript_text,
                 modality_code=txn.modality_code,
                 procedure_description=txn.procedure_description,
                 clinical_history=txn.complaint,
                 doctor_id=txn.doctor_id,
+                patient_name=_pn,
             )
             if i % 50 == 0:
                 session.commit()
@@ -205,12 +212,14 @@ def llm_test(txn_id):
         click.echo()
 
         # Regex formatting
+        _pn = " ".join(p for p in [txn.patient_given_names, txn.patient_family_name] if p) or None
         regex_result = format_transcript(
             txn.transcript_text,
             modality_code=txn.modality_code,
             procedure_description=txn.procedure_description,
             clinical_history=txn.complaint,
             doctor_id=txn.doctor_id,
+            patient_name=_pn,
         )
         click.echo("--- REGEX FORMATTED ---")
         click.echo(regex_result)
