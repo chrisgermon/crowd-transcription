@@ -350,15 +350,16 @@
 <!-- Word replacement modal -->
 <div id="replace-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40" onclick="closeReplaceModal()">
     <div class="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4" onclick="event.stopPropagation()">
-        <h3 class="text-lg font-semibold text-gray-900 mb-4">Add Word Replacement</h3>
+        <h3 class="text-lg font-semibold text-gray-900 mb-4">Add Word / Phrase Replacement</h3>
         <div class="space-y-3">
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Original (what Deepgram hears)</label>
-                <input type="text" id="replace-original" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500" readonly>
+                <input type="text" id="replace-original" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
+                <p class="text-xs text-gray-400 mt-1">Select multiple words in the transcript to create phrase replacements</p>
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Replace with</label>
-                <input type="text" id="replace-new" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500" placeholder="Correct word...">
+                <input type="text" id="replace-new" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500" placeholder="Correct word or phrase...">
             </div>
             <div>
                 <label class="flex items-center space-x-2">
@@ -886,7 +887,9 @@
 
             // Apply the replacement to the current report text
             var currentText = reportEl ? reportEl.textContent : '';
-            var regex = new RegExp('\\b' + original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
+            // Escape regex special chars, then replace spaces with flexible whitespace pattern
+            var escaped = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+            var regex = new RegExp('\\b' + escaped + '\\b', 'gi');
             var newText = currentText.replace(regex, replacement);
 
             if (newText !== currentText) {
@@ -922,28 +925,52 @@
         });
     };
 
+    // Helper: get selected phrase from browser text selection within report
+    function getSelectedPhrase() {
+        var sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+        var range = sel.getRangeAt(0);
+        // Only use selection if it's within the report element
+        if (!reportEl.contains(range.startContainer) || !reportEl.contains(range.endContainer)) return '';
+        var text = sel.toString().trim();
+        // Clean up: collapse whitespace, strip leading/trailing punctuation
+        text = text.replace(/\s+/g, ' ').replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
+        return text;
+    }
+
     // Double-click on a word span opens the replacement modal
+    // If there's a multi-word selection, use that; otherwise use the clicked word
     if (reportEl) {
         reportEl.addEventListener('dblclick', function(e) {
-            var span = e.target.closest('.word-span');
-            if (span && !isEditing) {
-                var word = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
-                if (word.length > 0) {
-                    e.preventDefault();
-                    openReplaceModal(word);
+            if (isEditing) return;
+            // Short delay to let the browser finish its double-click word selection
+            setTimeout(function() {
+                var phrase = getSelectedPhrase();
+                if (!phrase) {
+                    var span = e.target.closest('.word-span');
+                    if (span) {
+                        phrase = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
+                    }
                 }
-            }
+                if (phrase && phrase.length > 0) {
+                    openReplaceModal(phrase);
+                }
+            }, 10);
         });
 
-        // Right-click context menu alternative
+        // Right-click: if text is selected, use the phrase; otherwise use single word
         reportEl.addEventListener('contextmenu', function(e) {
-            var span = e.target.closest('.word-span');
-            if (span && !isEditing) {
-                var word = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
-                if (word.length > 0) {
-                    e.preventDefault();
-                    openReplaceModal(word);
+            if (isEditing) return;
+            var phrase = getSelectedPhrase();
+            if (!phrase) {
+                var span = e.target.closest('.word-span');
+                if (span) {
+                    phrase = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
                 }
+            }
+            if (phrase && phrase.length > 0) {
+                e.preventDefault();
+                openReplaceModal(phrase);
             }
         });
     }

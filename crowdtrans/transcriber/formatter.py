@@ -241,8 +241,15 @@ def _load_word_replacements() -> dict[str | None, list[tuple[re.Pattern, str]]]:
                 key = str(r.doctor_id) if r.doctor_id else None
                 if key not in _WORD_REPLACEMENT_CACHE:
                     _WORD_REPLACEMENT_CACHE[key] = []
-                pattern = re.compile(r'\b' + re.escape(r.original) + r'\b', re.IGNORECASE)
+                # For multi-word phrases, replace escaped spaces with \s+ for flexible matching
+                escaped = re.escape(r.original)
+                if ' ' in r.original:
+                    escaped = escaped.replace(r'\ ', r'\s+')
+                pattern = re.compile(r'\b' + escaped + r'\b', re.IGNORECASE)
                 _WORD_REPLACEMENT_CACHE[key].append((pattern, r.replacement))
+            # Sort each group so longer phrases are matched first (avoids partial matches)
+            for key in _WORD_REPLACEMENT_CACHE:
+                _WORD_REPLACEMENT_CACHE[key].sort(key=lambda pr: len(pr[0].pattern), reverse=True)
             total = sum(len(v) for v in _WORD_REPLACEMENT_CACHE.values())
             logger.info("Loaded %d user word replacements", total)
     except Exception as e:
