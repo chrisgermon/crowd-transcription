@@ -340,6 +340,10 @@
             <div class="flex justify-between"><span class="text-gray-600">Previous item</span><kbd class="px-2 py-0.5 bg-gray-100 rounded text-xs font-mono">Shift+&larr;</kbd></div>
             <div class="flex justify-between"><span class="text-gray-600">Next item</span><kbd class="px-2 py-0.5 bg-gray-100 rounded text-xs font-mono">Shift+&rarr;</kbd></div>
             <hr class="my-2">
+            <div class="flex justify-between"><span class="text-gray-600">Replace word</span><span class="text-xs text-gray-400">Double-click or right-click</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Select phrase</span><span class="text-xs text-gray-400">Click first word, Shift+click last</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Replace phrase</span><span class="text-xs text-gray-400">Select, then right-click</span></div>
+            <hr class="my-2">
             <div class="flex justify-between"><span class="text-gray-600">Save edit</span><kbd class="px-2 py-0.5 bg-gray-100 rounded text-xs font-mono">Ctrl+S</kbd></div>
             <div class="flex justify-between"><span class="text-gray-600">Cancel edit</span><kbd class="px-2 py-0.5 bg-gray-100 rounded text-xs font-mono">Esc</kbd></div>
             <div class="flex justify-between"><span class="text-gray-600">Show shortcuts</span><kbd class="px-2 py-0.5 bg-gray-100 rounded text-xs font-mono">?</kbd></div>
@@ -382,6 +386,7 @@
     .word-span:hover { background-color: #e0e7ff; }
     .word-active { background-color: #818cf8; color: white; border-radius: 2px; padding: 0 1px; }
     .word-span.word-replaced { background-color: #dcfce7; border-radius: 2px; padding: 0 1px; }
+    .word-span.word-selected { background-color: #c7d2fe; border-radius: 2px; padding: 0 1px; }
     /* Report formatting: bold titles/headings */
     .report-title { font-weight: 700; }
     .report-heading { font-weight: 700; }
@@ -546,14 +551,7 @@
                     formatReportDisplay(reportEl);
                     wordSpans = reportEl.querySelectorAll('.word-span');
                     if (syncStatus) syncStatus.classList.remove('hidden');
-
-                    reportEl.addEventListener('click', function(e) {
-                        var span = e.target.closest('.word-span');
-                        if (span && span.dataset.start && audio) {
-                            audio.currentTime = parseFloat(span.dataset.start);
-                            if (audio.paused) audio.play();
-                        }
-                    });
+                    // Click handler for audio sync + selection is set up below
                 }
             })
             .catch(function(err) {
@@ -925,52 +923,119 @@
         });
     };
 
-    // Helper: get selected phrase from browser text selection within report
-    function getSelectedPhrase() {
-        var sel = window.getSelection();
-        if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
-        var range = sel.getRangeAt(0);
-        // Only use selection if it's within the report element
-        if (!reportEl.contains(range.startContainer) || !reportEl.contains(range.endContainer)) return '';
-        var text = sel.toString().trim();
-        // Clean up: collapse whitespace, strip leading/trailing punctuation
-        text = text.replace(/\s+/g, ' ').replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
+    // ── Multi-word selection for phrase replacement ──
+    // Click a word = audio sync (existing). Shift+click = select range.
+    // Double-click = replace single word. Right-click = replace selection or word.
+
+    var selectionAnchorIdx = -1;  // first word of a shift-click range
+
+    function clearWordSelection() {
+        if (!wordSpans.length) return;
+        for (var i = 0; i < wordSpans.length; i++) {
+            wordSpans[i].classList.remove('word-selected');
+        }
+        selectionAnchorIdx = -1;
+    }
+
+    function getSelectedRange() {
+        // Returns array of selected span elements, or empty array
+        var selected = [];
+        for (var i = 0; i < wordSpans.length; i++) {
+            if (wordSpans[i].classList.contains('word-selected')) {
+                selected.push(wordSpans[i]);
+            }
+        }
+        return selected;
+    }
+
+    function getSelectedPhraseText() {
+        var spans = getSelectedRange();
+        if (spans.length === 0) return '';
+        var words = [];
+        for (var i = 0; i < spans.length; i++) {
+            var w = spans[i].textContent.trim();
+            if (w) words.push(w);
+        }
+        var text = words.join(' ');
+        // Strip leading/trailing punctuation
+        text = text.replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
         return text;
     }
 
-    // Double-click on a word span opens the replacement modal
-    // If there's a multi-word selection, use that; otherwise use the clicked word
-    if (reportEl) {
-        reportEl.addEventListener('dblclick', function(e) {
-            if (isEditing) return;
-            // Short delay to let the browser finish its double-click word selection
-            setTimeout(function() {
-                var phrase = getSelectedPhrase();
-                if (!phrase) {
-                    var span = e.target.closest('.word-span');
-                    if (span) {
-                        phrase = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
-                    }
-                }
-                if (phrase && phrase.length > 0) {
-                    openReplaceModal(phrase);
-                }
-            }, 10);
-        });
+    function selectWordRange(fromIdx, toIdx) {
+        clearWordSelection();
+        var lo = Math.min(fromIdx, toIdx);
+        var hi = Math.max(fromIdx, toIdx);
+        for (var i = lo; i <= hi; i++) {
+            if (i >= 0 && i < wordSpans.length) {
+                wordSpans[i].classList.add('word-selected');
+            }
+        }
+    }
 
-        // Right-click: if text is selected, use the phrase; otherwise use single word
-        reportEl.addEventListener('contextmenu', function(e) {
-            if (isEditing) return;
-            var phrase = getSelectedPhrase();
-            if (!phrase) {
-                var span = e.target.closest('.word-span');
-                if (span) {
-                    phrase = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
+    if (reportEl) {
+        // Click: audio sync + anchor for shift-click selection
+        reportEl.addEventListener('click', function(e) {
+            var span = e.target.closest('.word-span');
+            if (!span || isEditing) return;
+            var idx = parseInt(span.dataset.idx, 10);
+
+            if (e.shiftKey && selectionAnchorIdx >= 0) {
+                // Shift+click: select range from anchor to this word
+                e.preventDefault();
+                selectWordRange(selectionAnchorIdx, idx);
+            } else {
+                // Normal click: clear selection, set anchor, audio sync
+                clearWordSelection();
+                selectionAnchorIdx = idx;
+                if (span.dataset.start && audio) {
+                    audio.currentTime = parseFloat(span.dataset.start);
+                    if (audio.paused) audio.play();
                 }
             }
-            if (phrase && phrase.length > 0) {
+        });
+
+        // Double-click: open replacement modal for single word
+        reportEl.addEventListener('dblclick', function(e) {
+            if (isEditing) return;
+            var span = e.target.closest('.word-span');
+            if (span) {
+                var word = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
+                if (word.length > 0) {
+                    e.preventDefault();
+                    clearWordSelection();
+                    openReplaceModal(word);
+                }
+            }
+        });
+
+        // Right-click: open replacement modal for selected phrase, or single word
+        reportEl.addEventListener('contextmenu', function(e) {
+            if (isEditing) return;
+
+            // Check for multi-word selection first
+            var phrase = getSelectedPhraseText();
+            if (phrase && phrase.split(/\s+/).length > 1) {
                 e.preventDefault();
                 openReplaceModal(phrase);
+                return;
+            }
+
+            // Fall back to single word under cursor
+            var span = e.target.closest('.word-span');
+            if (span) {
+                var word = span.textContent.trim().replace(/[.,;:!?'"()\[\]{}]/g, '');
+                if (word.length > 0) {
+                    e.preventDefault();
+                    openReplaceModal(word);
+                }
+            }
+        });
+
+        // Clear selection when clicking outside the report
+        document.addEventListener('click', function(e) {
+            if (!reportEl.contains(e.target) && !document.getElementById('replace-modal').contains(e.target)) {
+                clearWordSelection();
             }
         });
     }
