@@ -924,42 +924,38 @@
     };
 
     // ── Multi-word selection for phrase replacement ──
-    // Click a word = audio sync (existing). Shift+click = select range.
-    // Double-click = replace single word. Right-click = replace selection or word.
+    // Select words by click-drag or click + shift+click, then right-click to replace.
+    // The browser selection is cached on mouseup because right-click can clear it.
 
-    var selectionAnchorIdx = -1;  // first word of a shift-click range
+    var selectionAnchorIdx = -1;
+    var cachedPhrase = '';  // cached from mouseup so right-click can use it
 
     function clearWordSelection() {
-        if (!wordSpans.length) return;
         for (var i = 0; i < wordSpans.length; i++) {
             wordSpans[i].classList.remove('word-selected');
         }
-        selectionAnchorIdx = -1;
     }
 
-    function getSelectedRange() {
-        // Returns array of selected span elements, or empty array
-        var selected = [];
+    function getSpanPhrase() {
+        var words = [];
         for (var i = 0; i < wordSpans.length; i++) {
             if (wordSpans[i].classList.contains('word-selected')) {
-                selected.push(wordSpans[i]);
+                var w = wordSpans[i].textContent.trim();
+                if (w) words.push(w);
             }
         }
-        return selected;
+        if (words.length < 2) return '';
+        return words.join(' ').replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
     }
 
-    function getSelectedPhraseText() {
-        var spans = getSelectedRange();
-        if (spans.length === 0) return '';
-        var words = [];
-        for (var i = 0; i < spans.length; i++) {
-            var w = spans[i].textContent.trim();
-            if (w) words.push(w);
-        }
-        var text = words.join(' ');
-        // Strip leading/trailing punctuation
+    function readBrowserSelection() {
+        var sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+        var range = sel.getRangeAt(0);
+        if (!reportEl.contains(range.startContainer) || !reportEl.contains(range.endContainer)) return '';
+        var text = sel.toString().trim().replace(/\s+/g, ' ');
         text = text.replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
-        return text;
+        return (text.split(/\s+/).length >= 2) ? text : '';
     }
 
     function selectWordRange(fromIdx, toIdx) {
@@ -974,6 +970,20 @@
     }
 
     if (reportEl) {
+        // Cache the browser text selection on every mouseup inside the report.
+        // This runs BEFORE contextmenu, so the selection is still intact.
+        reportEl.addEventListener('mouseup', function(e) {
+            // Don't cache on right-button mouseup (button 2)
+            if (e.button === 2) return;
+            cachedPhrase = readBrowserSelection();
+        });
+
+        // Also cache on selectionchange (covers keyboard-based selection)
+        document.addEventListener('selectionchange', function() {
+            var phrase = readBrowserSelection();
+            if (phrase) cachedPhrase = phrase;
+        });
+
         // Click: audio sync + anchor for shift-click selection
         reportEl.addEventListener('click', function(e) {
             var span = e.target.closest('.word-span');
@@ -981,13 +991,13 @@
             var idx = parseInt(span.dataset.idx, 10);
 
             if (e.shiftKey && selectionAnchorIdx >= 0) {
-                // Shift+click: select range from anchor to this word
                 e.preventDefault();
                 selectWordRange(selectionAnchorIdx, idx);
+                cachedPhrase = getSpanPhrase();
             } else {
-                // Normal click: clear selection, set anchor, audio sync
                 clearWordSelection();
                 selectionAnchorIdx = idx;
+                cachedPhrase = '';
                 if (span.dataset.start && audio) {
                     audio.currentTime = parseFloat(span.dataset.start);
                     if (audio.paused) audio.play();
@@ -1004,18 +1014,20 @@
                 if (word.length > 0) {
                     e.preventDefault();
                     clearWordSelection();
+                    cachedPhrase = '';
                     openReplaceModal(word);
                 }
             }
         });
 
-        // Right-click: open replacement modal for selected phrase, or single word
+        // Right-click: use cached phrase selection, or fall back to single word
         reportEl.addEventListener('contextmenu', function(e) {
             if (isEditing) return;
 
-            // Check for multi-word selection first
-            var phrase = getSelectedPhraseText();
-            if (phrase && phrase.split(/\s+/).length > 1) {
+            // Check span highlights first, then cached browser selection
+            var phrase = getSpanPhrase() || cachedPhrase;
+
+            if (phrase) {
                 e.preventDefault();
                 openReplaceModal(phrase);
                 return;
@@ -1032,10 +1044,12 @@
             }
         });
 
-        // Clear selection when clicking outside the report
+        // Clear when clicking outside
         document.addEventListener('click', function(e) {
             if (!reportEl.contains(e.target) && !document.getElementById('replace-modal').contains(e.target)) {
                 clearWordSelection();
+                selectionAnchorIdx = -1;
+                cachedPhrase = '';
             }
         });
     }
