@@ -283,6 +283,18 @@
         </div>
         {% endif %}
 
+        <!-- Referral & Worksheet Attachments -->
+        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-amber-400">
+            <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Documents</h3>
+                <button onclick="loadAttachments()" id="attachments-load-btn"
+                        class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">Load</button>
+            </div>
+            <div id="attachments-panel">
+                <p class="text-xs text-gray-400">Click "Load" to view referral documents and worksheets.</p>
+            </div>
+        </div>
+
         <!-- Report Templates -->
         <div class="bg-white rounded-lg shadow p-4 border-l-4 border-purple-400">
             <div class="flex items-center justify-between mb-2">
@@ -924,11 +936,12 @@
     };
 
     // ── Multi-word selection for phrase replacement ──
-    // Select words by click-drag or click + shift+click, then right-click to replace.
-    // The browser selection is cached on mouseup because right-click can clear it.
+    // Drag across words or shift+click to select a range, then right-click to replace.
+    // We track mousedown/mouseup on word-spans directly (browser selection API is unreliable).
 
-    var selectionAnchorIdx = -1;
-    var cachedPhrase = '';  // cached from mouseup so right-click can use it
+    var dragStartIdx = -1;   // word idx where mousedown occurred
+    var selectionAnchorIdx = -1;  // for shift+click range selection
+    var justDragged = false;  // flag to prevent click from clearing a drag selection
 
     function clearWordSelection() {
         for (var i = 0; i < wordSpans.length; i++) {
@@ -948,16 +961,6 @@
         return words.join(' ').replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
     }
 
-    function readBrowserSelection() {
-        var sel = window.getSelection();
-        if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
-        var range = sel.getRangeAt(0);
-        if (!reportEl.contains(range.startContainer) || !reportEl.contains(range.endContainer)) return '';
-        var text = sel.toString().trim().replace(/\s+/g, ' ');
-        text = text.replace(/^[.,;:!?'"()\[\]{}]+|[.,;:!?'"()\[\]{}]+$/g, '');
-        return (text.split(/\s+/).length >= 2) ? text : '';
-    }
-
     function selectWordRange(fromIdx, toIdx) {
         clearWordSelection();
         var lo = Math.min(fromIdx, toIdx);
@@ -970,22 +973,39 @@
     }
 
     if (reportEl) {
-        // Cache the browser text selection on every mouseup inside the report.
-        // This runs BEFORE contextmenu, so the selection is still intact.
+        // Track where the mouse goes down (left-button only)
+        reportEl.addEventListener('mousedown', function(e) {
+            if (e.button !== 0 || isEditing) return;
+            var span = e.target.closest('.word-span');
+            if (span) {
+                dragStartIdx = parseInt(span.dataset.idx, 10);
+            } else {
+                dragStartIdx = -1;
+            }
+        });
+
+        // On mouseup: if dragged across multiple words, highlight the range
         reportEl.addEventListener('mouseup', function(e) {
-            // Don't cache on right-button mouseup (button 2)
-            if (e.button === 2) return;
-            cachedPhrase = readBrowserSelection();
+            if (e.button !== 0 || isEditing) return;
+            var span = e.target.closest('.word-span');
+            if (!span || dragStartIdx < 0) return;
+            var endIdx = parseInt(span.dataset.idx, 10);
+
+            if (endIdx !== dragStartIdx) {
+                // Multi-word drag — select the range
+                selectWordRange(dragStartIdx, endIdx);
+                selectionAnchorIdx = -1;
+                justDragged = true;
+            }
+            dragStartIdx = -1;
         });
 
-        // Also cache on selectionchange (covers keyboard-based selection)
-        document.addEventListener('selectionchange', function() {
-            var phrase = readBrowserSelection();
-            if (phrase) cachedPhrase = phrase;
-        });
-
-        // Click: audio sync + anchor for shift-click selection
+        // Click: audio sync + set anchor for shift+click
         reportEl.addEventListener('click', function(e) {
+            if (justDragged) {
+                justDragged = false;
+                return;  // don't clear selection after a drag
+            }
             var span = e.target.closest('.word-span');
             if (!span || isEditing) return;
             var idx = parseInt(span.dataset.idx, 10);
@@ -993,11 +1013,9 @@
             if (e.shiftKey && selectionAnchorIdx >= 0) {
                 e.preventDefault();
                 selectWordRange(selectionAnchorIdx, idx);
-                cachedPhrase = getSpanPhrase();
             } else {
                 clearWordSelection();
                 selectionAnchorIdx = idx;
-                cachedPhrase = '';
                 if (span.dataset.start && audio) {
                     audio.currentTime = parseFloat(span.dataset.start);
                     if (audio.paused) audio.play();
@@ -1014,19 +1032,16 @@
                 if (word.length > 0) {
                     e.preventDefault();
                     clearWordSelection();
-                    cachedPhrase = '';
                     openReplaceModal(word);
                 }
             }
         });
 
-        // Right-click: use cached phrase selection, or fall back to single word
+        // Right-click: replace selected phrase, or single word under cursor
         reportEl.addEventListener('contextmenu', function(e) {
             if (isEditing) return;
 
-            // Check span highlights first, then cached browser selection
-            var phrase = getSpanPhrase() || cachedPhrase;
-
+            var phrase = getSpanPhrase();
             if (phrase) {
                 e.preventDefault();
                 openReplaceModal(phrase);
@@ -1049,7 +1064,6 @@
             if (!reportEl.contains(e.target) && !document.getElementById('replace-modal').contains(e.target)) {
                 clearWordSelection();
                 selectionAnchorIdx = -1;
-                cachedPhrase = '';
             }
         });
     }
@@ -1059,6 +1073,62 @@
         if (e.code === 'Enter') { e.preventDefault(); saveReplacement(); }
         if (e.code === 'Escape') { closeReplaceModal(); }
     });
+
+    // ── Attachments (referral docs & worksheets) ──
+
+    window.loadAttachments = function() {
+        var panel = document.getElementById('attachments-panel');
+        var btn = document.getElementById('attachments-load-btn');
+        btn.textContent = 'Loading...';
+        btn.disabled = true;
+
+        fetch('/api/attachments/' + TXN_ID)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var hasContent = (data.referrals && data.referrals.length > 0) ||
+                                 (data.worksheets && data.worksheets.length > 0);
+                if (!hasContent) {
+                    panel.innerHTML = '<p class="text-xs text-gray-400">No referral documents or worksheets found.</p>';
+                    btn.textContent = 'Load';
+                    btn.disabled = false;
+                    return;
+                }
+
+                var html = '';
+
+                if (data.referrals && data.referrals.length > 0) {
+                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1">Referral Documents</h4>';
+                    data.referrals.forEach(function(att, idx) {
+                        if (att.external) {
+                            html += '<div class="mb-2 p-2 bg-gray-50 border rounded"><p class="text-xs text-gray-500">' + escapeHTML(att.name) + '</p>'
+                                + '<p class="text-xs text-gray-400 italic">Available in Karisma (stored externally)</p></div>';
+                        } else if (att.format === 'pdf') {
+                            html += '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
+                                + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded" style="height:400px;"></iframe></div>';
+                        } else {
+                            html += '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
+                                + '<img src="data:image/' + att.format + ';base64,' + att.data + '" class="w-full border rounded" /></div>';
+                        }
+                    });
+                }
+
+                if (data.worksheets && data.worksheets.length > 0) {
+                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1 mt-3">Worksheets</h4>';
+                    data.worksheets.forEach(function(att, idx) {
+                        html += '<div class="mb-2"><img src="data:image/' + (att.format || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer" onclick="window.open(this.src)" title="Click to open full size" /></div>';
+                    });
+                }
+
+                panel.innerHTML = html;
+                btn.textContent = 'Reload';
+                btn.disabled = false;
+            })
+            .catch(function(err) {
+                panel.innerHTML = '<p class="text-xs text-red-500">Error: ' + escapeHTML(err.message) + '</p>';
+                btn.textContent = 'Load';
+                btn.disabled = false;
+            });
+    };
 
     // ── Report templates ──
 

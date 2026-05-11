@@ -440,6 +440,7 @@ def run_learning(limit: int = 0, reformat: bool = True) -> dict[str, Any]:
                     clinical_history=txn.complaint,
                     doctor_id=txn.doctor_id,
                     patient_name=_pn,
+                    patient_ur=txn.patient_ur,
                 )
                 if i % 500 == 0:
                     session.commit()

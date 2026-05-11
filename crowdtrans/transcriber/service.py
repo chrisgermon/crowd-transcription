@@ -415,6 +415,7 @@ def _store_result(session, site: SiteConfig, txn: Transcription, result):
         clinical_history=txn.complaint,
         doctor_id=txn.doctor_id,
         patient_name=_patient_name,
+        patient_ur=txn.patient_ur,
         existing_report_text=txn.existing_report_text,
     )
     txn.formatted_text = regex_text
@@ -520,6 +521,7 @@ def _backfill_patient_data(session, site: SiteConfig):
                 clinical_history=txn.complaint,
                 doctor_id=txn.doctor_id,
                 patient_name=_pn,
+                patient_ur=txn.patient_ur,
             )
             reformatted += 1
 

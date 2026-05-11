@@ -1484,6 +1484,7 @@ def format_transcript(
     clinical_history: str | None = None,
     doctor_id: str | None = None,
     patient_name: str | None = None,
+    patient_ur: str | None = None,
 ) -> str:
     """Full formatting pipeline: spoken commands -> corrections -> sections -> headings.
 
@@ -1533,6 +1534,9 @@ def format_transcript(
     signature = _get_radiologist_signature(doctor_id)
     if signature:
         text = text.rstrip() + "\n\n" + signature.strip()
+    # Append Patient ID if available
+    if patient_ur:
+        text = text.rstrip() + "\nPatient ID Number:  " + patient_ur
     return text
 
 
@@ -1549,6 +1553,7 @@ def format_transcript_hybrid(
     clinical_history: str | None = None,
     doctor_id: str | None = None,
     patient_name: str | None = None,
+    patient_ur: str | None = None,
     existing_report_text: str | None = None,
 ) -> tuple[str, "LLMFormatResult | None", str]:
     """Two-pass formatting: regex (always) + LLM (if enabled).
@@ -1563,7 +1568,7 @@ def format_transcript_hybrid(
     # Always run regex pipeline (fast, free, deterministic)
     regex_result = format_transcript(
         text, modality_code, procedure_description, clinical_history, doctor_id,
-        patient_name,
+        patient_name, patient_ur,
     )
 
     store = get_config_store()
@@ -1602,6 +1607,9 @@ def format_transcript_hybrid(
             signature = _get_radiologist_signature(doctor_id)
             if signature:
                 llm_result.formatted_text = llm_result.formatted_text.rstrip() + "\n\n" + signature.strip()
+            # Append Patient ID if available
+            if patient_ur:
+                llm_result.formatted_text = llm_result.formatted_text.rstrip() + "\nPatient ID Number:  " + patient_ur
         method = "llm" if mode == "llm_only" else "hybrid"
         return regex_result, llm_result, method
     except Exception as e:

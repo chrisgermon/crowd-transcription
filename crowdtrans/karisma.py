@@ -752,6 +752,81 @@ ORDER BY RR.AuditRegisteredDate DESC
 """
 
 
+# ---------------------------------------------------------------------------
+# Attachments: referral PDFs (Request) and worksheet images (Report)
+# ---------------------------------------------------------------------------
+
+REFERRAL_ATTACHMENTS_QUERY = """\
+SELECT RA.Name, E.Buffer, E.[Format], E.[Length], E.[Handle]
+FROM [Version].[Karisma.Request.Attachment] RA
+JOIN [System].[Extent] E ON E.[Key] = RA.ContentKey
+WHERE RA.RequestRecordKey = %d
+  AND RA.Key_Deleted = 0
+ORDER BY RA.TransactionKey DESC
+"""
+
+WORKSHEET_ATTACHMENTS_QUERY = """\
+SELECT RIA.Name, E.Buffer, E.[Format], E.[Length]
+FROM [Version].[Karisma.Report.InstanceAttachment] RIA
+JOIN [Version].[Karisma.Report.InstanceChange] RIC ON RIC.[Key] = RIA.ReportInstanceChangeKey
+JOIN [System].[Extent] E ON E.[Key] = RIA.BlobKey
+WHERE RIC.ReportInstanceKey = %d
+  AND RIA.Key_Deleted = 0
+  AND RIA.[Current] = 1
+  AND E.Buffer IS NOT NULL
+ORDER BY RIA.TransactionKey DESC
+"""
+
+
+def fetch_referral_attachments(site: SiteConfig, request_key: int) -> list[dict[str, Any]]:
+    """Fetch referral PDF attachments for a request.
+
+    Returns list of dicts with keys: name, data, format, length, external.
+    When external=True, data is empty (blob stored on Karisma filesystem).
+    """
+    if not request_key:
+        return []
+    conn = _get_connection(site)
+    try:
+        with conn.cursor(as_dict=False) as cur:
+            cur.execute(REFERRAL_ATTACHMENTS_QUERY, (request_key,))
+            results = []
+            for row in cur:
+                name, buf, fmt, length, handle = row
+                results.append({
+                    "name": name or "referral",
+                    "data": bytes(buf) if buf else b"",
+                    "format": (fmt or "").lstrip(".") or "pdf",
+                    "length": length or 0,
+                    "external": buf is None and handle is not None,
+                })
+            return results
+    finally:
+        conn.close()
+
+
+def fetch_worksheet_attachments(site: SiteConfig, report_instance_key: int) -> list[dict[str, Any]]:
+    """Fetch worksheet/SonoReview image attachments for a report instance."""
+    if not report_instance_key:
+        return []
+    conn = _get_connection(site)
+    try:
+        with conn.cursor(as_dict=False) as cur:
+            cur.execute(WORKSHEET_ATTACHMENTS_QUERY, (report_instance_key,))
+            results = []
+            for row in cur:
+                name, buf, fmt, length = row
+                results.append({
+                    "name": name or "worksheet",
+                    "data": bytes(buf) if buf else b"",
+                    "format": (fmt or "").lstrip(".") or "png",
+                    "length": length or 0,
+                })
+            return results
+    finally:
+        conn.close()
+
+
 def fetch_undictated_studies(
     site: SiteConfig,
     limit: int = 500,

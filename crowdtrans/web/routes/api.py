@@ -151,6 +151,7 @@ def reformat_all():
                 clinical_history=txn.complaint,
                 doctor_id=txn.doctor_id,
                 patient_name=_pn,
+                patient_ur=txn.patient_ur,
             )
             count += 1
         session.commit()
@@ -634,6 +635,71 @@ def patient_search(q: str = Query("", min_length=2, description="Search query"))
             for r in matches
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Attachments: referral documents and worksheets from Karisma
+# ---------------------------------------------------------------------------
+
+
+@router.get("/attachments/{transcription_id}")
+def get_attachments(transcription_id: int):
+    """Fetch referral PDFs and worksheet images for a transcription."""
+    import base64
+    import logging
+    logger = logging.getLogger(__name__)
+
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        if txn.site_id != "karisma":
+            return {"referrals": [], "worksheets": []}
+
+        from crowdtrans.config import Settings
+        settings = Settings()
+        site = settings.get_site("karisma")
+        if not site:
+            return {"referrals": [], "worksheets": []}
+
+        from crowdtrans.karisma import fetch_referral_attachments, fetch_worksheet_attachments
+
+        referrals = []
+        request_key = int(txn.order_id) if txn.order_id else None
+        if request_key:
+            try:
+                raw = fetch_referral_attachments(site, request_key)
+                for att in raw:
+                    if att.get("external"):
+                        referrals.append({
+                            "name": att["name"],
+                            "format": att["format"],
+                            "data": "",
+                            "external": True,
+                        })
+                    elif att["data"]:
+                        referrals.append({
+                            "name": att["name"],
+                            "format": att["format"],
+                            "data": base64.b64encode(att["data"]).decode("ascii"),
+                        })
+            except Exception as e:
+                logger.warning("Failed to fetch referral attachments: %s", e)
+
+        worksheets = []
+        if txn.report_instance_key:
+            try:
+                raw = fetch_worksheet_attachments(site, txn.report_instance_key)
+                for att in raw:
+                    worksheets.append({
+                        "name": att["name"],
+                        "format": att["format"],
+                        "data": base64.b64encode(att["data"]).decode("ascii"),
+                    })
+            except Exception as e:
+                logger.warning("Failed to fetch worksheet attachments: %s", e)
+
+        return {"referrals": referrals, "worksheets": worksheets}
 
 
 # ---------------------------------------------------------------------------

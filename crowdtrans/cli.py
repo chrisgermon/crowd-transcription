@@ -141,6 +141,7 @@ def reformat():
                 clinical_history=txn.complaint,
                 doctor_id=txn.doctor_id,
                 patient_name=_pn,
+                patient_ur=txn.patient_ur,
             )
             if i % 50 == 0:
                 session.commit()
@@ -220,6 +221,7 @@ def llm_test(txn_id):
             clinical_history=txn.complaint,
             doctor_id=txn.doctor_id,
             patient_name=_pn,
+            patient_ur=txn.patient_ur,
         )
         click.echo("--- REGEX FORMATTED ---")
         click.echo(regex_result)
