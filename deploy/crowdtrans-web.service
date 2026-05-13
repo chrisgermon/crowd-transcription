@@ -22,5 +22,12 @@ NoNewPrivileges=yes
 ProtectHome=yes
 ReadWritePaths=/opt/crowdtrans/data
 
+# Allow binding to privileged ports (.env sets WEB_PORT=443).
+# Without these, uvicorn fails with EACCES when started as the non-root
+# crowdtrans user. NoNewPrivileges=yes still applies, since ambient caps
+# are granted at exec time by systemd, not by the binary suid'ing up.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 [Install]
 WantedBy=multi-user.target
