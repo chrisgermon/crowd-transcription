@@ -659,12 +659,20 @@
         btn.textContent = 'Saving...';
         statusEl.textContent = '';
 
+        var controller = new AbortController();
+        var timeoutId = setTimeout(function() { controller.abort(); }, 15000);
+
         fetch('/api/worklist/' + TXN_ID + '/edit-text', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: editTextarea.value, editor: 'web-ui' })
+            body: JSON.stringify({ text: editTextarea.value, editor: 'web-ui' }),
+            signal: controller.signal
         })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            clearTimeout(timeoutId);
+            if (!r.ok) throw new Error('Server error (' + r.status + ')');
+            return r.json();
+        })
         .then(function(data) {
             if (data.status === 'ok') {
                 if (reportEl) {
@@ -685,7 +693,11 @@
             }
         })
         .catch(function(err) {
-            statusEl.textContent = 'Network error: ' + err.message;
+            clearTimeout(timeoutId);
+            var msg = err.name === 'AbortError'
+                ? 'Save timed out — please try again'
+                : 'Network error: ' + err.message;
+            statusEl.textContent = msg;
             btn.disabled = false;
             btn.textContent = 'Save Changes';
         });
@@ -1023,7 +1035,7 @@
             }
         });
 
-        // Double-click: open replacement modal for single word
+        // Double-click: open replacement modal for single word + seek audio
         reportEl.addEventListener('dblclick', function(e) {
             if (isEditing) return;
             var span = e.target.closest('.word-span');
@@ -1032,6 +1044,10 @@
                 if (word.length > 0) {
                     e.preventDefault();
                     clearWordSelection();
+                    // Seek audio to this word's position
+                    if (span.dataset.start && audio) {
+                        audio.currentTime = parseFloat(span.dataset.start);
+                    }
                     openReplaceModal(word);
                 }
             }

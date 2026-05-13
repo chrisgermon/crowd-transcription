@@ -99,6 +99,16 @@
                         Compare
                     </a>
                     {% endif %}
+                    {% if txn.transcript_text and txn.words_json %}
+                    <button onclick="toggleConfidence()" id="confidence-btn"
+                            class="inline-flex items-center px-3 py-1.5 border border-rose-300 rounded-md text-sm font-medium text-rose-700 bg-white hover:bg-rose-50"
+                            title="Highlight words Deepgram was less sure about">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 4a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z"/>
+                        </svg>
+                        <span id="confidence-label">Highlight uncertain</span>
+                    </button>
+                    {% endif %}
                     {% if txn.transcript_text %}
                     <button onclick="toggleAdditions()" id="additions-btn"
                             class="inline-flex items-center px-3 py-1.5 border border-amber-300 rounded-md text-sm font-medium text-amber-700 bg-white hover:bg-amber-50"
@@ -311,6 +321,31 @@
                 </div>
             </dl>
         </div>
+
+        <!-- Confidence summary -->
+        {% if txn.words_json %}
+        <div class="bg-white rounded-lg shadow p-4" id="confidence-summary" style="display:none;">
+            <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Deepgram Confidence</h3>
+            <div class="space-y-2 text-sm">
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Word counts</span>
+                    <span class="font-medium text-gray-900">
+                        <span class="text-red-600" id="conf-low-count">0</span> /
+                        <span class="text-amber-600" id="conf-medium-count">0</span> /
+                        <span class="text-green-700" id="conf-high-count">0</span>
+                    </span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Min word conf.</span>
+                    <span class="font-medium text-gray-900" id="conf-min">—</span>
+                </div>
+                <div class="pt-2 border-t border-gray-100">
+                    <p class="text-xs text-gray-500 mb-2">Lowest-confidence words (click to play):</p>
+                    <ul class="space-y-1 text-xs" id="conf-lowest"></ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         {% endif %}
     </div>
 </div>
@@ -318,6 +353,26 @@
 <style>
     .report-title { font-weight: 700; }
     .report-heading { font-weight: 700; }
+
+    /* Confidence highlighting */
+    .conf-low {
+        background-color: rgba(239, 68, 68, 0.18);
+        border-bottom: 1px dotted rgba(185, 28, 28, 0.6);
+        cursor: pointer;
+    }
+    .conf-medium {
+        background-color: rgba(245, 158, 11, 0.15);
+        border-bottom: 1px dotted rgba(180, 83, 9, 0.5);
+        cursor: pointer;
+    }
+    .conf-high { /* no styling — confident words look normal */ }
+    .conf-unknown {
+        border-bottom: 1px dotted rgba(148, 163, 184, 0.5);
+    }
+    .conf-low:hover, .conf-medium:hover, .conf-unknown:hover {
+        filter: brightness(0.95);
+    }
+    .conf-token[title] { position: relative; }
 </style>
 
 <script>
@@ -417,6 +472,176 @@ function escapeHtml(s) {
     var d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+}
+
+// ── Confidence highlighting ──────────────────────────────────────────────
+
+var _confidenceData = null;       // cached /api/confidence response
+var _confidenceVisible = false;   // current toggle state
+var _originalReportHtml = {};     // saved innerHTML per pane (to restore)
+
+function toggleConfidence() {
+    var btn = document.getElementById('confidence-btn');
+    var label = document.getElementById('confidence-label');
+    var summary = document.getElementById('confidence-summary');
+
+    if (_confidenceVisible) {
+        // Hide → restore original HTML
+        ['report-llm', 'report-formatted', 'report-raw'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el && _originalReportHtml[id] !== undefined) {
+                el.innerHTML = _originalReportHtml[id];
+                formatReportDisplay(el);
+            }
+        });
+        if (summary) summary.style.display = 'none';
+        if (label) label.textContent = 'Highlight uncertain';
+        btn.classList.remove('bg-rose-100');
+        _confidenceVisible = false;
+        return;
+    }
+
+    if (_confidenceData) {
+        applyConfidence();
+        return;
+    }
+
+    if (label) label.textContent = 'Loading…';
+    fetch('/api/confidence/{{ txn.id }}')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _confidenceData = data;
+            applyConfidence();
+        })
+        .catch(function() {
+            if (label) label.textContent = 'Highlight uncertain';
+            alert('Failed to load confidence data');
+        });
+}
+
+function applyConfidence() {
+    if (!_confidenceData) return;
+    var btn = document.getElementById('confidence-btn');
+    var label = document.getElementById('confidence-label');
+    var summary = document.getElementById('confidence-summary');
+
+    // Save originals once, before swapping
+    ['report-llm', 'report-formatted', 'report-raw'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el && _originalReportHtml[id] === undefined) {
+            _originalReportHtml[id] = el.innerHTML;
+        }
+    });
+
+    var rawEl = document.getElementById('report-raw');
+    if (rawEl) {
+        rawEl.innerHTML = renderRawWithConfidence(_confidenceData.raw_words);
+    }
+    var fmtEl = document.getElementById('report-formatted');
+    if (fmtEl && _confidenceData.formatted_tokens && _confidenceData.formatted_tokens.length) {
+        fmtEl.innerHTML = renderTokensWithConfidence(_confidenceData.formatted_tokens);
+        formatReportDisplay(fmtEl);
+    }
+    var llmEl = document.getElementById('report-llm');
+    if (llmEl && _confidenceData.llm_tokens && _confidenceData.llm_tokens.length) {
+        llmEl.innerHTML = renderTokensWithConfidence(_confidenceData.llm_tokens);
+        formatReportDisplay(llmEl);
+    }
+
+    renderConfidenceSummary(_confidenceData.summary);
+    if (summary) summary.style.display = '';
+    if (label) label.textContent = 'Hide highlights';
+    btn.classList.add('bg-rose-100');
+    _confidenceVisible = true;
+}
+
+function renderRawWithConfidence(words) {
+    if (!words || !words.length) return '';
+    var html = '';
+    for (var i = 0; i < words.length; i++) {
+        var w = words[i];
+        if (i > 0) html += ' ';
+        html += confSpan(w.word, w.band, w.confidence, w.start, w.alternatives);
+    }
+    return html;
+}
+
+function renderTokensWithConfidence(tokens) {
+    var html = '';
+    for (var i = 0; i < tokens.length; i++) {
+        var t = tokens[i];
+        if (t.is_word) {
+            html += confSpan(t.text, t.band, t.confidence, t.start, t.alternatives);
+        } else {
+            html += escapeHtml(t.text);
+        }
+    }
+    return html;
+}
+
+function confSpan(text, band, conf, start, alternatives) {
+    var cls = 'conf-token conf-' + (band || 'unknown');
+    var tipParts = [];
+    if (conf !== null && conf !== undefined) {
+        tipParts.push((conf * 100).toFixed(1) + '%');
+    } else {
+        tipParts.push('no audio match');
+    }
+    if (alternatives && alternatives.length) {
+        var altWords = alternatives.slice(0, 3).map(function(a) {
+            return a.word + (a.confidence !== null && a.confidence !== undefined
+                ? ' (' + (a.confidence * 100).toFixed(0) + '%)' : '');
+        }).join(', ');
+        tipParts.push('alts: ' + altWords);
+    }
+    var attrs = 'class="' + cls + '"';
+    attrs += ' title="' + tipParts.join(' — ').replace(/"/g, '&quot;') + '"';
+    if (start !== null && start !== undefined) {
+        attrs += ' data-start="' + start + '" onclick="seekAudio(' + start + ')"';
+    }
+    return '<span ' + attrs + '>' + escapeHtml(text) + '</span>';
+}
+
+function seekAudio(t) {
+    var p = document.getElementById('audio-player');
+    if (!p || t === null || t === undefined) return;
+    try {
+        p.currentTime = t;
+        p.play().catch(function() { /* autoplay may be blocked */ });
+    } catch (e) { /* ignore */ }
+}
+
+function renderConfidenceSummary(s) {
+    if (!s) return;
+    var setText = function(id, v) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = v;
+    };
+    setText('conf-low-count', s.low_count || 0);
+    setText('conf-medium-count', s.medium_count || 0);
+    setText('conf-high-count', s.high_count || 0);
+    setText('conf-min', s.min_confidence !== null && s.min_confidence !== undefined
+        ? (s.min_confidence * 100).toFixed(1) + '%' : '—');
+
+    var list = document.getElementById('conf-lowest');
+    if (list) {
+        list.innerHTML = '';
+        (s.lowest || []).forEach(function(w) {
+            var li = document.createElement('li');
+            li.className = 'flex items-center justify-between';
+            var btn = document.createElement('button');
+            btn.className = 'text-rose-700 hover:underline text-left';
+            btn.textContent = w.word;
+            btn.onclick = function() { seekAudio(w.start); };
+            var pct = document.createElement('span');
+            pct.className = 'text-gray-400 ml-2';
+            pct.textContent = w.confidence !== null && w.confidence !== undefined
+                ? (w.confidence * 100).toFixed(1) + '%' : '';
+            li.appendChild(btn);
+            li.appendChild(pct);
+            list.appendChild(li);
+        });
+    }
 }
 </script>
 {% endblock %}

@@ -83,22 +83,30 @@ def doctor_profile_detail(request: Request, doctor_id: str):
     })
 
 
-def _run_learning_task():
+def _run_learning_task(reformat: bool = False):
     """Background task to run the learning pipeline."""
     try:
         from crowdtrans.database import init_db
         from crowdtrans.transcriber.learner import run_learning
         init_db()
-        run_learning(reformat=True)
+        run_learning(reformat=reformat)
     except Exception:
         logger.exception("Learning task failed")
 
 
 @router.post("/run")
-def trigger_learning(background_tasks: BackgroundTasks):
-    """Trigger the learning pipeline as a background task."""
-    background_tasks.add_task(_run_learning_task)
-    return JSONResponse({"status": "started", "message": "Learning pipeline started in background"})
+def trigger_learning(background_tasks: BackgroundTasks, reformat: bool = False):
+    """Trigger the learning pipeline as a background task.
+
+    Pass ?reformat=true to also re-apply the formatter to all completed
+    transcriptions (expensive — re-runs the LLM on every row when hybrid
+    mode is on). Defaults to off.
+    """
+    background_tasks.add_task(_run_learning_task, reformat=reformat)
+    msg = "Learning pipeline started in background"
+    if reformat:
+        msg += " (reformat enabled — this may take a while)"
+    return JSONResponse({"status": "started", "message": msg})
 
 
 @router.post("/sync-dictionary")

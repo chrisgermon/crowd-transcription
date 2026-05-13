@@ -104,6 +104,18 @@
                     </select>
                 </div>
 
+                {# Alternatives — surface secondary hypotheses for low-confidence words #}
+                <div>
+                    <label for="deepgram_alternatives" class="block text-sm font-medium text-gray-700">Alternatives</label>
+                    <select name="deepgram_alternatives" id="deepgram_alternatives"
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2">
+                        <option value="1" {{ 'selected' if (globals.deepgram_alternatives or '1') == '1' }}>1 (no extras — cheapest)</option>
+                        <option value="2" {{ 'selected' if globals.deepgram_alternatives == '2' }}>2 (shows second-best word in tooltips)</option>
+                        <option value="3" {{ 'selected' if globals.deepgram_alternatives == '3' }}>3 (shows top 3 alternates)</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Higher values increase Deepgram cost. 2+ enables hover-tooltip alternates for uncertain words.</p>
+                </div>
+
                 {# Poll Interval #}
                 <div>
                     <label for="poll_interval_seconds" class="block text-sm font-medium text-gray-700">Default Poll Interval (seconds)</label>

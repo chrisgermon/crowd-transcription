@@ -349,7 +349,10 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r'\b(\d+)\s+milliliters?\b', re.IGNORECASE), r'\1ml'),
     (re.compile(r'\b(\d+)\s+millilitres?\b', re.IGNORECASE), r'\1ml'),
     # "by" -> "x" for dimensions (13x in comparison): "5 by 3" -> "5 x 3"
-    (re.compile(r'(\d+)\s*(?:mm|cm)?\s+by\s+(\d+)', re.IGNORECASE),
+    # Applied twice to handle chained dims: "3 by 2 by 2 cm" -> "3 x 2 x 2 cm"
+    (re.compile(r'(\d+(?:\.\d+)?)\s*(?:mm|cm)?\s+by\s+(\d)', re.IGNORECASE),
+     lambda m: f"{m.group(1)} x {m.group(2)}"),
+    (re.compile(r'(\d+(?:\.\d+)?)\s*(?:mm|cm)?\s+by\s+(\d)', re.IGNORECASE),
      lambda m: f"{m.group(1)} x {m.group(2)}"),
     # "cc's" / "ccs" -> "cc" (unit cleanup, 8x in transcripts)
     (re.compile(r"\bcc['']?s\b", re.IGNORECASE), 'cc'),
@@ -364,10 +367,18 @@ _MEDICAL_CORRECTIONS = [
     (re.compile(r'\bfourth\b', re.IGNORECASE), '4th'),
     (re.compile(r'\bfifth\b', re.IGNORECASE), '5th'),
 
-    # Vertebral level formatting (L 5 -> L5, C 5 -> C5) (4x+ in comparisons)
-    (re.compile(r'\b([LCST])\s+(\d)\b'), r'\1\2'),
-    (re.compile(r'\b([LCST])(\d)\s*/\s*(\d)\b'), r'\1\2/\3'),
-    (re.compile(r'\b([LCST])(\d)\s*/\s*([LCST])(\d)\b'), r'\1\2/\3\4'),
+    # Vertebral level formatting (l 5 -> L5, c 5 -> C5, t 12 -> T12)
+    (re.compile(r'\b([lcstLCST])\s+(\d{1,2})\b'),
+     lambda m: m.group(1).upper() + m.group(2)),
+    # Same-segment slash: L4/5, C5/6
+    (re.compile(r'\b([lcstLCST])(\d{1,2})\s*/\s*(\d{1,2})\b'),
+     lambda m: m.group(1).upper() + m.group(2) + '/' + m.group(3)),
+    # Cross-segment slash: L5/S1, C7/T1
+    (re.compile(r'\b([lcstLCST])(\d{1,2})\s*/\s*([lcstLCST])(\d{1,2})\b'),
+     lambda m: m.group(1).upper() + m.group(2) + '/' + m.group(3).upper() + m.group(4)),
+    # Adjacent levels without separator: "L4 L5" -> "L4/L5", "l 5 s 1" -> "L5/S1"
+    (re.compile(r'\b([lcstLCST])(\d{1,2})\s+([lcstLCST])(\d{1,2})\b'),
+     lambda m: m.group(1).upper() + m.group(2) + '/' + m.group(3).upper() + m.group(4)),
 
     # Hyphenated compound terms (from report analysis)
     (re.compile(r'\bground\s+glass\b', re.IGNORECASE), 'ground-glass'),
@@ -990,6 +1001,8 @@ _SPOKEN_COMMANDS = [
     # "colon"
     (re.compile(r'\bcolon\b(?!\s+(?:cancer|polyp|mass|lesion|biopsy))', re.IGNORECASE), ':'),
     # --- Phase 2: Handle <\n> tokens (Deepgram dictation mode) ---
+    # <\n\n> variant (double newline in single token)
+    (re.compile(r'[^\S\n]*<\\n\\n>[^\S\n]*'), '\n\n'),
     (re.compile(r'[^\S\n]*<\\n>[^\S\n]*<\\n>[^\S\n]*'), '\n\n'),
     (re.compile(r'[^\S\n]*<\\n>[^\S\n]*'), '\n'),
 ]

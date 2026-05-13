@@ -151,22 +151,27 @@ def reformat():
 
 
 @cli.command()
-@click.option("--no-reformat", is_flag=True, help="Skip reformatting transcriptions after learning")
-def learn(no_reformat):
+@click.option("--reformat", is_flag=True, help="After learning, re-apply the formatter to all completed transcriptions (can re-run the LLM — expensive).")
+@click.option("--no-reformat", is_flag=True, hidden=True, help="Deprecated: reformat is now off by default.")
+def learn(reformat, no_reformat):
     """Analyze transcript-report pairs, update doctor profiles, and discover new rules.
 
     Compares all completed Visage transcriptions against their final reports to:
     - Build/update per-doctor formatting profiles (section structures, word corrections)
     - Discover candidate global corrections (Deepgram mishears, spelling patterns)
+    - Mine TranscriptionEdit rows so typist corrections feed back into learning
     - Generate a suggestions report at /opt/crowdtrans/data/learning_suggestions.json
 
-    By default also reformats all transcriptions with the updated profiles.
+    Reformatting is OFF by default — pass --reformat to also re-apply the
+    formatter to every transcription (this can re-run the LLM on each row).
     """
     from crowdtrans.database import init_db
     from crowdtrans.transcriber.learner import run_learning
 
+    if no_reformat:
+        click.echo("(--no-reformat is now the default; flag has no effect)")
     init_db()
-    results = run_learning(reformat=not no_reformat)
+    results = run_learning(reformat=reformat)
 
     stats = results["stats"]
     click.echo(f"\nLearning complete:")

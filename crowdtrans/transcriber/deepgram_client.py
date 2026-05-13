@@ -24,11 +24,25 @@ class TranscriptionResult:
     processing_duration_ms: int
 
 
+def _get_int_setting(key: str, default: int) -> int:
+    store = get_config_store()
+    raw = store.get_global(key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _build_options(keyterms: list[str] | None = None) -> PrerecordedOptions:
     store = get_config_store()
     model = store.get_global("deepgram_model") or settings.deepgram_model
     language = store.get_global("deepgram_language") or settings.deepgram_language
-    options = PrerecordedOptions(
+    # Configurable: 1 = no extras (default, no extra billing).
+    # 2 surfaces second-best hypotheses for low-confidence words.
+    alternatives = max(1, _get_int_setting("deepgram_alternatives", 1))
+    kwargs = dict(
         model=model,
         language=language,
         smart_format=True,
@@ -38,22 +52,78 @@ def _build_options(keyterms: list[str] | None = None) -> PrerecordedOptions:
         utterances=True,
         numerals=True,
     )
+    if alternatives > 1:
+        kwargs["alternatives"] = alternatives
     if keyterms:
-        options.extra = {"keyterm": keyterms}
-    return options
+        # Use the native keyterm parameter — Nova-3's keyterm boost.
+        kwargs["keyterm"] = keyterms
+    return PrerecordedOptions(**kwargs)
+
+
+def _word_alternatives(alt_word_lists: list[list]) -> dict[tuple[float, float], list[dict]]:
+    """Build a {(start, end) -> [alt_word, ...]} index from alternative hypotheses.
+
+    Only includes alternative words whose timing matches the primary alt's
+    word timing (so we can attach them to the right token).
+    """
+    if len(alt_word_lists) < 2:
+        return {}
+    index: dict[tuple[float, float], list[dict]] = {}
+    primary = alt_word_lists[0]
+    primary_keys = {(round(w.start, 2), round(w.end, 2)): w.word.lower() for w in primary}
+    for alt_words in alt_word_lists[1:]:
+        for w in alt_words:
+            key = (round(w.start, 2), round(w.end, 2))
+            primary_word = primary_keys.get(key)
+            if primary_word is None:
+                continue
+            if w.word.lower() == primary_word:
+                continue  # same word; nothing useful to surface
+            index.setdefault(key, []).append({
+                "word": w.word,
+                "confidence": getattr(w, "confidence", None),
+            })
+    return index
 
 
 def _parse_response(response) -> TranscriptionResult:
     result = response.results
     channel = result.channels[0]
-    alt = channel.alternatives[0]
+    alts = list(channel.alternatives or [])
+    if not alts:
+        return TranscriptionResult(
+            transcript_text="", confidence=0.0,
+            words_json="[]", paragraphs_json="[]",
+            request_id=response.metadata.request_id if response.metadata else "",
+            processing_duration_ms=0,
+        )
+    alt = alts[0]
+
+    # Index alternative hypotheses by primary word timing so we can attach them
+    alt_word_index = _word_alternatives([a.words for a in alts if a.words])
 
     words = []
     if alt.words:
-        words = [
-            {"word": w.word, "start": w.start, "end": w.end, "confidence": w.confidence}
-            for w in alt.words
-        ]
+        for w in alt.words:
+            entry = {
+                "word": w.word,
+                "start": w.start,
+                "end": w.end,
+                "confidence": w.confidence,
+            }
+            alts_for_word = alt_word_index.get((round(w.start, 2), round(w.end, 2)))
+            if alts_for_word:
+                # Deduplicate by word text
+                seen = set()
+                unique = []
+                for a in alts_for_word:
+                    key = a["word"].lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(a)
+                entry["alternatives"] = unique
+            words.append(entry)
 
     paragraphs = []
     if alt.paragraphs and alt.paragraphs.paragraphs:

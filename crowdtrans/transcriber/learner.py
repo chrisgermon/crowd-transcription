@@ -19,7 +19,7 @@ from typing import Any
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
-from crowdtrans.models import Transcription
+from crowdtrans.models import Transcription, TranscriptionEdit
 
 logger = logging.getLogger(__name__)
 
@@ -100,19 +100,27 @@ def _tokenize(text: str) -> list[str]:
 def _find_word_replacements(
     our_tokens: list[str], report_tokens: list[str]
 ) -> list[tuple[str, str]]:
-    """Find word-level replacements between transcript and report.
+    """Find word- and short-phrase replacements between transcript and report.
 
-    Returns list of (transcript_word, report_word) pairs from 'replace' opcodes.
+    Returns (transcript_phrase, report_phrase) tuples from 'replace' opcodes
+    up to length 3 on either side, so multi-word mishears like
+    'near fusion' -> 'knee effusion' are captured alongside single-word ones.
     """
     sm = SequenceMatcher(None, our_tokens, report_tokens, autojunk=False)
     replacements = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "replace":
-            our_span = our_tokens[i1:i2]
-            report_span = report_tokens[j1:j2]
-            # Only single-word replacements for now (most reliable)
-            if len(our_span) == 1 and len(report_span) == 1:
-                replacements.append((our_span[0], report_span[0]))
+        if tag != "replace":
+            continue
+        our_span = our_tokens[i1:i2]
+        report_span = report_tokens[j1:j2]
+        # Skip very long spans — likely structural rewrites, not mishears.
+        if len(our_span) > 3 or len(report_span) > 3 or not our_span or not report_span:
+            continue
+        wrong = " ".join(our_span)
+        right = " ".join(report_span)
+        if wrong == right:
+            continue
+        replacements.append((wrong, right))
     return replacements
 
 
@@ -125,6 +133,92 @@ _NOISE_WORDS = {
     "no", "not", "be", "has", "have", "had", "do", "does", "did",
     "so", "but", "if", "then", "than", "from", "up", "out", "about",
 }
+
+
+def _is_noise_pair(wrong: str, right: str) -> bool:
+    """Reject (wrong, right) pairs that are not useful corrections.
+
+    A pair is noise if either side is a single short stopword, the strings
+    are identical, or one side is a single character.
+    """
+    if wrong == right:
+        return True
+    if len(wrong) <= 1 or len(right) <= 1:
+        return True
+    if " " not in wrong and " " not in right:
+        if wrong in _NOISE_WORDS or right in _NOISE_WORDS:
+            return True
+    return False
+
+
+def _mine_edit_corrections() -> Counter:
+    """Mine typist edits from TranscriptionEdit and return (wrong, right) counts.
+
+    Treats each row as labelled training data: diff original_text against
+    edited_text token-wise and capture replace opcodes (1–3 tokens per side).
+    Identical-text or empty rows are skipped. Multiple edits to the same
+    transcription only contribute the *latest* version (last-write-wins),
+    so we learn from the final accepted form, not interim drafts.
+    """
+    pairs: Counter = Counter()
+    try:
+        with SessionLocal() as session:
+            rows = (
+                session.query(TranscriptionEdit)
+                .order_by(TranscriptionEdit.transcription_id, TranscriptionEdit.created_at.asc())
+                .all()
+            )
+            # Keep only the final edit per transcription
+            latest: dict[int, TranscriptionEdit] = {}
+            for r in rows:
+                latest[r.transcription_id] = r
+    except Exception as e:
+        logger.warning("Could not load TranscriptionEdit rows: %s", e)
+        return pairs
+
+    for edit in latest.values():
+        if not edit.original_text or not edit.edited_text:
+            continue
+        if edit.original_text == edit.edited_text:
+            continue
+        wrong_tokens = _tokenize(edit.original_text)
+        right_tokens = _tokenize(edit.edited_text)
+        if not wrong_tokens or not right_tokens:
+            continue
+        for wrong, right in _find_word_replacements(wrong_tokens, right_tokens):
+            pairs[(wrong, right)] += 1
+    return pairs
+
+
+def _load_existing_rule_set() -> set[tuple[str, str]]:
+    """Build a set of (wrong, right) pairs already covered by the formatter
+    or by user-defined WordReplacement rows, so we don't re-suggest them.
+    """
+    pairs: set[tuple[str, str]] = set()
+    # User-defined WordReplacement rules (DB)
+    try:
+        from crowdtrans.models import WordReplacement
+        with SessionLocal() as session:
+            for r in session.query(WordReplacement).filter(WordReplacement.enabled.is_(True)).all():
+                pairs.add((r.original.lower().strip(), r.replacement.lower().strip()))
+    except Exception:
+        pass
+    # Hard-coded formatter corrections (best-effort: parse the regex source)
+    try:
+        from crowdtrans.transcriber import formatter
+        for pat, repl in getattr(formatter, "_MEDICAL_CORRECTIONS", []):
+            if not isinstance(repl, str):
+                continue  # skip lambda replacements
+            src = pat.pattern
+            # Strip \b boundaries and lookarounds; very best-effort
+            clean = re.sub(r"\\b|\(\?<?[!=].*?\)", "", src)
+            clean = clean.replace("\\s+", " ").replace("\\.", ".").replace("\\,", ",")
+            clean = re.sub(r"[()?:|+*]", "", clean).strip()
+            if clean and 1 < len(clean) < 60:
+                pairs.add((clean.lower(), repl.lower().strip()))
+    except Exception:
+        pass
+    return pairs
 
 
 def analyze_pairs(limit: int = 0) -> dict[str, Any]:
@@ -240,14 +334,10 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
         transcript_word_freq.update(set(our_tokens))
         report_word_freq.update(set(report_tokens))
 
-        # Word replacements
+        # Word replacements (single tokens + short phrases up to 3 words)
         replacements = _find_word_replacements(our_tokens, report_tokens)
         for wrong, right in replacements:
-            if wrong in _NOISE_WORDS or right in _NOISE_WORDS:
-                continue
-            if wrong == right:
-                continue
-            if len(wrong) <= 1 or len(right) <= 1:
+            if _is_noise_pair(wrong, right):
                 continue
             global_corrections[(wrong, right)] += 1
 
@@ -266,9 +356,7 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
                 mod["section_presence"][s] += 1
             mod["similarity_sum"] += ratio
             for wrong, right in replacements:
-                if wrong in _NOISE_WORDS or right in _NOISE_WORDS:
-                    continue
-                if wrong == right or len(wrong) <= 1 or len(right) <= 1:
+                if _is_noise_pair(wrong, right):
                     continue
                 mod["word_corrections"][(wrong, right)] += 1
 
@@ -307,16 +395,38 @@ def analyze_pairs(limit: int = 0) -> dict[str, Any]:
         if profile["modalities"]:
             profiles[doctor_id] = profile
 
+    # ── Mine manual typist edits (TranscriptionEdit) — ground truth ────
+    # Each typist edit gets EDIT_WEIGHT extra weight per occurrence because
+    # it's labelled correction data, not an inferred pair.
+    EDIT_WEIGHT = 5
+    edit_pairs = _mine_edit_corrections()
+    for (wrong, right), cnt in edit_pairs.items():
+        if _is_noise_pair(wrong, right):
+            continue
+        global_corrections[(wrong, right)] += cnt * EDIT_WEIGHT
+
     # ── Build global correction candidates ─────────────────────────────
-    # Filter to corrections that appear 3+ times and aren't noise
-    significant_corrections = [
-        {"transcript": wrong, "report": right, "count": cnt}
-        for (wrong, right), cnt in global_corrections.most_common(200)
-        if cnt >= 3
-        and wrong not in _NOISE_WORDS
-        and right not in _NOISE_WORDS
-        and wrong != right
-    ]
+    # Filter to corrections that appear 3+ times, aren't noise, and aren't
+    # already covered by existing formatter rules or user WordReplacements.
+    existing_rules = _load_existing_rule_set()
+    significant_corrections = []
+    for (wrong, right), cnt in global_corrections.most_common(400):
+        if cnt < 3:
+            continue
+        if _is_noise_pair(wrong, right):
+            continue
+        if (wrong, right) in existing_rules:
+            continue
+        entry = {
+            "transcript": wrong,
+            "report": right,
+            "count": cnt,
+        }
+        # Tag corrections that have manual-edit evidence — these are highest signal
+        if (wrong, right) in edit_pairs:
+            entry["source"] = "manual_edit"
+            entry["edit_count"] = edit_pairs[(wrong, right)]
+        significant_corrections.append(entry)
 
     # ── Find transcript-only and report-only words ─────────────────────
     transcript_only = []
@@ -382,13 +492,16 @@ def save_suggestions(results: dict, path: Path | None = None) -> Path:
     return path
 
 
-def run_learning(limit: int = 0, reformat: bool = True) -> dict[str, Any]:
+def run_learning(limit: int = 0, reformat: bool = False) -> dict[str, Any]:
     """Run the full learning pipeline.
 
-    1. Analyze all transcript-report pairs
+    1. Analyze all transcript-report pairs (including mined typist edits)
     2. Update doctor_profiles.json
     3. Save suggestions for review
     4. Optionally reformat all transcriptions with updated profiles
+       (off by default — reformatting can re-run the LLM on every row,
+       which is expensive; only enable when you intentionally want to
+       refresh existing outputs after a profile change.)
 
     Returns the analysis results dict.
     """

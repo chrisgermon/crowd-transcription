@@ -54,7 +54,7 @@ def stats(site: str = Query("", description="Filter by site")):
 
 
 @router.get("/audio/{transcription_id}")
-def stream_audio(transcription_id: int):
+def stream_audio(transcription_id: int, request: Request):
     """Stream the dictation audio file for a transcription."""
     with SessionLocal() as session:
         txn = session.query(Transcription).filter_by(id=transcription_id).first()
@@ -81,11 +81,40 @@ def stream_audio(transcription_id: int):
             if audio is None:
                 raise HTTPException(status_code=500, detail="Audio decompression failed")
 
+            data = audio.data
+            content_type = audio.content_type
+            total = len(data)
+            filename = txn.accession_number or txn.source_dictation_id
+
+            # Support HTTP range requests for audio seeking
+            range_header = request.headers.get("range")
+            if range_header:
+                # Parse "bytes=START-END"
+                range_spec = range_header.replace("bytes=", "").strip()
+                parts = range_spec.split("-")
+                start = int(parts[0]) if parts[0] else 0
+                end = int(parts[1]) if parts[1] else total - 1
+                end = min(end, total - 1)
+                chunk = data[start:end + 1]
+                return Response(
+                    content=chunk,
+                    status_code=206,
+                    media_type=content_type,
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{total}",
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(len(chunk)),
+                        "Content-Disposition": f'inline; filename="{filename}.wav"',
+                    },
+                )
+
             return Response(
-                content=audio.data,
-                media_type=audio.content_type,
+                content=data,
+                media_type=content_type,
                 headers={
-                    "Content-Disposition": f'inline; filename="{txn.accession_number or txn.source_dictation_id}.wav"',
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(total),
+                    "Content-Disposition": f'inline; filename="{filename}.wav"',
                 },
             )
 
@@ -205,6 +234,171 @@ def get_words(transcription_id: int):
         words = json.loads(txn.words_json) if txn.words_json else []
         paragraphs = json.loads(txn.paragraphs_json) if txn.paragraphs_json else []
     return {"words": words, "paragraphs": paragraphs}
+
+
+# ---------------------------------------------------------------------------
+# Confidence highlighting
+# ---------------------------------------------------------------------------
+
+# Words to silently treat as confident even if Deepgram scored them low
+# (very common short tokens whose low scores are usually noise, not real errors).
+_CONFIDENCE_IGNORE = {
+    "a", "an", "the", "is", "are", "was", "were", "of", "to", "in", "on",
+    "at", "and", "or", "but", "if", "by", "as", "it",
+}
+
+
+def _conf_band(conf: float | None) -> str:
+    """Map a confidence score to a UI band: high / medium / low / unknown."""
+    if conf is None:
+        return "unknown"
+    if conf >= 0.9:
+        return "high"
+    if conf >= 0.75:
+        return "medium"
+    return "low"
+
+
+def _tokenise_with_spans(text: str) -> list[dict]:
+    """Split text into (token, start, end) spans, preserving punctuation positions.
+
+    Returns a list of {"text": str, "start": int, "end": int, "is_word": bool}.
+    Word tokens are matched on letters/digits/apostrophes/hyphens; everything
+    else (whitespace, punctuation) becomes a non-word chunk.
+    """
+    import re as _re
+    tokens = []
+    pos = 0
+    pattern = _re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*")
+    for m in pattern.finditer(text):
+        if m.start() > pos:
+            tokens.append({"text": text[pos:m.start()], "start": pos, "end": m.start(), "is_word": False})
+        tokens.append({"text": m.group(0), "start": m.start(), "end": m.end(), "is_word": True})
+        pos = m.end()
+    if pos < len(text):
+        tokens.append({"text": text[pos:], "start": pos, "end": len(text), "is_word": False})
+    return tokens
+
+
+@router.get("/confidence/{transcription_id}")
+def get_confidence(transcription_id: int):
+    """Return word-level confidence data + aligned formatted text tokens.
+
+    Response shape:
+      {
+        "raw_words": [{word, start, end, confidence, band, alternatives?}, ...],
+        "formatted_tokens": [{text, is_word, confidence?, band, start?, end?}, ...],
+        "llm_tokens":      [{text, is_word, confidence?, band, start?, end?}, ...],
+        "summary": {
+            "min_confidence", "avg_confidence",
+            "low_count", "medium_count", "high_count",
+            "lowest": [{word, confidence, start}, ...]
+        }
+      }
+    """
+    from difflib import SequenceMatcher
+
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        raw_words = json.loads(txn.words_json) if txn.words_json else []
+        formatted_text = txn.formatted_text or ""
+        llm_text = txn.llm_formatted_text or ""
+
+    # Annotate raw words with band
+    annotated_raw = []
+    confidences = []
+    for w in raw_words:
+        conf = w.get("confidence")
+        if conf is not None:
+            confidences.append(conf)
+        band = _conf_band(conf)
+        # Suppress low-band warnings for noise stopwords
+        if band == "low" and (w.get("word") or "").lower() in _CONFIDENCE_IGNORE:
+            band = "medium"
+        entry = {
+            "word": w.get("word"),
+            "start": w.get("start"),
+            "end": w.get("end"),
+            "confidence": conf,
+            "band": band,
+        }
+        if w.get("alternatives"):
+            entry["alternatives"] = w["alternatives"]
+        annotated_raw.append(entry)
+
+    def _align(text: str) -> list[dict]:
+        if not text or not annotated_raw:
+            return []
+        tokens = _tokenise_with_spans(text)
+        # Build lowercase word-only sequences for matching
+        raw_seq = [(w.get("word") or "").lower() for w in annotated_raw]
+        token_word_indices = [i for i, t in enumerate(tokens) if t["is_word"]]
+        token_seq = [tokens[i]["text"].lower() for i in token_word_indices]
+
+        sm = SequenceMatcher(None, token_seq, raw_seq, autojunk=False)
+        # Map each formatted word-index → raw word-index (or None)
+        token_to_raw: dict[int, int] = {}
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                for k in range(i2 - i1):
+                    token_to_raw[i1 + k] = j1 + k
+
+        out = []
+        for i, t in enumerate(tokens):
+            entry = {"text": t["text"], "is_word": t["is_word"]}
+            if t["is_word"]:
+                tw_idx = None
+                # Find this token's position in token_word_indices
+                # (small list, linear scan is fine for typical report sizes)
+                try:
+                    tw_idx = token_word_indices.index(i)
+                except ValueError:
+                    tw_idx = None
+                if tw_idx is not None and tw_idx in token_to_raw:
+                    raw = annotated_raw[token_to_raw[tw_idx]]
+                    entry["confidence"] = raw.get("confidence")
+                    entry["band"] = raw.get("band")
+                    entry["start"] = raw.get("start")
+                    entry["end"] = raw.get("end")
+                    if raw.get("alternatives"):
+                        entry["alternatives"] = raw["alternatives"]
+                else:
+                    entry["confidence"] = None
+                    entry["band"] = "unknown"
+            out.append(entry)
+        return out
+
+    formatted_tokens = _align(formatted_text)
+    llm_tokens = _align(llm_text) if llm_text else []
+
+    # Summary stats
+    low_count = sum(1 for w in annotated_raw if w["band"] == "low")
+    medium_count = sum(1 for w in annotated_raw if w["band"] == "medium")
+    high_count = sum(1 for w in annotated_raw if w["band"] == "high")
+    lowest = sorted(
+        [w for w in annotated_raw if w["confidence"] is not None],
+        key=lambda w: w["confidence"],
+    )[:10]
+    summary = {
+        "min_confidence": min(confidences) if confidences else None,
+        "avg_confidence": sum(confidences) / len(confidences) if confidences else None,
+        "low_count": low_count,
+        "medium_count": medium_count,
+        "high_count": high_count,
+        "lowest": [
+            {"word": w["word"], "confidence": w["confidence"], "start": w["start"]}
+            for w in lowest
+        ],
+    }
+
+    return {
+        "raw_words": annotated_raw,
+        "formatted_tokens": formatted_tokens,
+        "llm_tokens": llm_tokens,
+        "summary": summary,
+    }
 
 
 @router.post("/worklist/{transcription_id}/edit-text")
