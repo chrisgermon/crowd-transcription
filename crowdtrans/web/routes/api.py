@@ -15,8 +15,20 @@ from crowdtrans.models import Transcription, TranscriptionEdit, WordReplacement
 router = APIRouter(prefix="/api")
 
 
-@router.get("/stats")
-def stats(site: str = Query("", description="Filter by site")):
+# ---------------------------------------------------------------------------
+# Stats snapshot — shared by /api/stats and the SSE stream
+# ---------------------------------------------------------------------------
+
+
+def _build_stats_snapshot(site: str = "") -> dict:
+    """Single source of truth for what the dashboard shows.
+
+    Returns the same shape /api/stats has historically returned, plus the
+    fields the live dashboard needs (watermarks, recent completions). Keeping
+    these in one helper means the SSE stream and the JSON endpoint can't drift.
+    """
+    from crowdtrans.models import Watermark
+
     with SessionLocal() as session:
         base = session.query(Transcription)
         if site:
@@ -45,12 +57,133 @@ def stats(site: str = Query("", description="Filter by site")):
             .count()
         )
 
+        recent_rows = (
+            base.filter(Transcription.status == "complete")
+            .order_by(Transcription.transcription_completed_at.desc())
+            .limit(10)
+            .all()
+        )
+        recent = [
+            {
+                "id": r.id,
+                "site_id": r.site_id,
+                "accession_number": r.accession_number,
+                "patient_family_name": r.patient_family_name,
+                "patient_given_names": r.patient_given_names,
+                "modality_code": r.modality_code,
+                "doctor_family_name": r.doctor_family_name,
+                "confidence": r.confidence,
+                "transcription_completed_at": r.transcription_completed_at.isoformat()
+                    if r.transcription_completed_at else None,
+            }
+            for r in recent_rows
+        ]
+
+        watermarks = [
+            {
+                "site_id": w.site_id,
+                "last_dictation_id": w.last_dictation_id,
+                "last_poll_at": w.last_poll_at.isoformat() if w.last_poll_at else None,
+            }
+            for w in session.query(Watermark).all()
+        ]
+
     return {
         "total": total,
         "status_counts": status_counts,
         "today_completed": today_count or 0,
         "avg_confidence": round(avg_confidence * 100, 1) if avg_confidence else None,
+        "recent": recent,
+        "watermarks": watermarks,
+        "ts": datetime.datetime.utcnow().isoformat(),
     }
+
+
+@router.get("/stats")
+def stats(site: str = Query("", description="Filter by site")):
+    snap = _build_stats_snapshot(site)
+    # Preserve original endpoint shape (no recent/watermarks here — those go
+    # through /api/stream/stats for the live dashboard).
+    return {
+        "total": snap["total"],
+        "status_counts": snap["status_counts"],
+        "today_completed": snap["today_completed"],
+        "avg_confidence": snap["avg_confidence"],
+    }
+
+
+@router.get("/stream/stats")
+async def stream_stats(request: Request, site: str = Query("", description="Filter by site")):
+    """Server-sent-events stream pushing live stats snapshots to the dashboard.
+
+    Emits a snapshot every ~3s only if anything changed vs the last sent
+    snapshot. Heartbeat comments are interleaved so proxies don't drop
+    idle connections.
+    """
+    import asyncio
+    import hashlib
+
+    from fastapi.responses import StreamingResponse
+
+    POLL_SECONDS = 3
+    HEARTBEAT_SECONDS = 25
+    MAX_DURATION_SECONDS = 60 * 30  # 30 min cap per connection; client reconnects
+
+    def _digest(snap: dict) -> str:
+        # Hash everything except the timestamp so identical state doesn't re-emit
+        payload = {k: v for k, v in snap.items() if k != "ts"}
+        return hashlib.md5(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+    async def _event_stream():
+        last_digest: str | None = None
+        last_heartbeat = 0.0
+        start = asyncio.get_event_loop().time()
+
+        # Emit an immediate snapshot so the client doesn't have to wait POLL_SECONDS
+        snap = await asyncio.to_thread(_build_stats_snapshot, site)
+        last_digest = _digest(snap)
+        yield f"event: snapshot\ndata: {json.dumps(snap, default=str)}\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                return
+            now = asyncio.get_event_loop().time()
+            if now - start > MAX_DURATION_SECONDS:
+                # Tell the client we're closing politely; EventSource will reconnect
+                yield "event: bye\ndata: {}\n\n"
+                return
+
+            await asyncio.sleep(POLL_SECONDS)
+
+            try:
+                snap = await asyncio.to_thread(_build_stats_snapshot, site)
+            except Exception:
+                # On a transient DB error, send a heartbeat instead of crashing
+                # the connection — client stays subscribed.
+                yield ": db-error\n\n"
+                continue
+
+            d = _digest(snap)
+            if d != last_digest:
+                last_digest = d
+                last_heartbeat = now
+                yield f"event: snapshot\ndata: {json.dumps(snap, default=str)}\n\n"
+            elif now - last_heartbeat > HEARTBEAT_SECONDS:
+                last_heartbeat = now
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            # Critical: disable buffering at any reverse proxy (nginx, Cloudflare).
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/audio/{transcription_id}")

@@ -3,12 +3,18 @@
 
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <h1 class="text-2xl font-bold text-gray-900 flex items-center">
+        Dashboard
+        <span id="live-indicator" class="ml-3 inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500" title="Connecting to live stream…">
+            <span id="live-dot" class="inline-block w-2 h-2 rounded-full bg-gray-400 mr-1.5"></span>
+            <span id="live-text">connecting</span>
+        </span>
+    </h1>
     <div class="flex items-center space-x-2">
         <span class="text-sm text-gray-500">Site:</span>
-        <a href="/?site=" class="px-2 py-1 rounded text-sm {% if not selected_site %}bg-indigo-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">All</a>
+        <a href="/dashboard?site=" class="px-2 py-1 rounded text-sm {% if not selected_site %}bg-indigo-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">All</a>
         {% for sc in site_configs %}
-        <a href="/?site={{ sc.site_id }}" class="px-2 py-1 rounded text-sm {% if selected_site == sc.site_id %}bg-indigo-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">{{ sc.site_id|capitalize }}</a>
+        <a href="/dashboard?site={{ sc.site_id }}" class="px-2 py-1 rounded text-sm {% if selected_site == sc.site_id %}bg-indigo-600 text-white{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}">{{ sc.site_id|capitalize }}</a>
         {% endfor %}
     </div>
 </div>
@@ -17,19 +23,19 @@
 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
     <div class="bg-white rounded-lg shadow p-5">
         <div class="text-sm font-medium text-gray-500">Total Dictations</div>
-        <div class="mt-1 text-3xl font-bold text-gray-900">{{ "{:,}".format(total) }}</div>
+        <div class="mt-1 text-3xl font-bold text-gray-900" id="stat-total">{{ "{:,}".format(total) }}</div>
     </div>
     <div class="bg-white rounded-lg shadow p-5">
         <div class="text-sm font-medium text-gray-500">Completed</div>
-        <div class="mt-1 text-3xl font-bold text-green-600">{{ "{:,}".format(status_counts.get('complete', 0)) }}</div>
+        <div class="mt-1 text-3xl font-bold text-green-600" id="stat-complete">{{ "{:,}".format(status_counts.get('complete', 0)) }}</div>
     </div>
     <div class="bg-white rounded-lg shadow p-5">
         <div class="text-sm font-medium text-gray-500">Today</div>
-        <div class="mt-1 text-3xl font-bold text-indigo-600">{{ "{:,}".format(today_count) }}</div>
+        <div class="mt-1 text-3xl font-bold text-indigo-600" id="stat-today">{{ "{:,}".format(today_count) }}</div>
     </div>
     <div class="bg-white rounded-lg shadow p-5">
         <div class="text-sm font-medium text-gray-500">Avg Confidence</div>
-        <div class="mt-1 text-3xl font-bold text-gray-900">
+        <div class="mt-1 text-3xl font-bold text-gray-900" id="stat-confidence">
             {% if avg_confidence %}{{ "%.1f"|format(avg_confidence * 100) }}%{% else %}—{% endif %}
         </div>
     </div>
@@ -49,7 +55,7 @@
             ] %}
             <div class="flex items-center justify-between">
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ color }}">{{ label }}</span>
-                <span class="text-sm font-medium text-gray-700">{{ "{:,}".format(status_counts.get(s, 0)) }}</span>
+                <span class="text-sm font-medium text-gray-700" data-status="{{ s }}">{{ "{:,}".format(status_counts.get(s, 0)) }}</span>
             </div>
             {% endfor %}
         </div>
@@ -57,9 +63,9 @@
 
     <div class="bg-white rounded-lg shadow p-5">
         <h2 class="text-lg font-semibold text-gray-900 mb-4">Sites</h2>
-        <div class="space-y-4">
+        <div class="space-y-4" id="watermarks-list">
             {% for wm in watermarks %}
-            <div class="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+            <div class="border-b border-gray-100 pb-3 last:border-0 last:pb-0" data-site="{{ wm.site_id }}">
                 <div class="flex items-center justify-between mb-1">
                     <span class="text-sm font-semibold text-gray-800">{{ wm.site_id|capitalize }}</span>
                     <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">active</span>
@@ -67,11 +73,11 @@
                 <dl class="grid grid-cols-2 gap-x-4 text-xs text-gray-500">
                     <div>
                         <dt>Watermark</dt>
-                        <dd class="font-medium text-gray-700">{{ "{:,}".format(wm.last_dictation_id) }}</dd>
+                        <dd class="font-medium text-gray-700" data-field="watermark">{{ "{:,}".format(wm.last_dictation_id) }}</dd>
                     </div>
                     <div>
                         <dt>Last poll</dt>
-                        <dd class="font-medium text-gray-700">{{ wm.last_poll_at.strftime('%Y-%m-%d %H:%M') if wm.last_poll_at else '—' }}</dd>
+                        <dd class="font-medium text-gray-700" data-field="last-poll">{{ wm.last_poll_at.strftime('%Y-%m-%d %H:%M') if wm.last_poll_at else '—' }}</dd>
                     </div>
                 </dl>
             </div>
@@ -98,9 +104,9 @@
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Completed</th>
                 </tr>
             </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
+            <tbody class="bg-white divide-y divide-gray-200" id="recent-tbody">
                 {% for t in recent %}
-                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/transcriptions/{{ t.id }}'">
+                <tr class="hover:bg-gray-50 cursor-pointer" data-id="{{ t.id }}" onclick="window.location='/transcriptions/{{ t.id }}'">
                     <td class="px-4 py-3 text-xs">
                         {% set site_colors = {'visage': 'bg-blue-100 text-blue-700', 'karisma': 'bg-purple-100 text-purple-700'} %}
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ site_colors.get(t.site_id, 'bg-gray-100 text-gray-700') }}">{{ t.site_id }}</span>
@@ -113,10 +119,156 @@
                     <td class="px-4 py-3 text-sm text-gray-500">{{ t.transcription_completed_at.strftime('%Y-%m-%d %H:%M') if t.transcription_completed_at else '—' }}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">No transcriptions yet</td></tr>
+                <tr id="recent-empty"><td colspan="7" class="px-4 py-8 text-center text-gray-400">No transcriptions yet</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
+
+<style>
+@keyframes flashRow {
+    0%   { background-color: rgba(34, 197, 94, 0.25); }
+    100% { background-color: transparent; }
+}
+.flash-new { animation: flashRow 2.5s ease-out 1; }
+@keyframes liveDot {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+.live-pulse { animation: liveDot 1.4s ease-in-out infinite; }
+</style>
+
+<script>
+(function() {
+    var SITE = {{ selected_site|tojson }};
+    var url = '/api/stream/stats' + (SITE ? '?site=' + encodeURIComponent(SITE) : '');
+    var es = null;
+    var seenIds = new Set();
+    // Seed seenIds with what we rendered server-side so we don't re-flash on first push
+    document.querySelectorAll('#recent-tbody tr[data-id]').forEach(function(r) {
+        seenIds.add(parseInt(r.dataset.id, 10));
+    });
+
+    function setIndicator(state) {
+        var dot = document.getElementById('live-dot');
+        var text = document.getElementById('live-text');
+        if (!dot || !text) return;
+        dot.classList.remove('live-pulse');
+        var conf = {
+            live:        { dotClass: 'bg-green-500 live-pulse',  textClass: 'text-green-700 bg-green-50', text: 'live' },
+            connecting:  { dotClass: 'bg-gray-400',              textClass: 'text-gray-500 bg-gray-100',  text: 'connecting' },
+            offline:     { dotClass: 'bg-red-500',               textClass: 'text-red-700 bg-red-50',     text: 'reconnecting' },
+        };
+        var c = conf[state] || conf.connecting;
+        dot.className = 'inline-block w-2 h-2 rounded-full mr-1.5 ' + c.dotClass;
+        var pill = document.getElementById('live-indicator');
+        pill.className = 'ml-3 inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full ' + c.textClass;
+        text.textContent = c.text;
+    }
+
+    function fmtNum(n) { return (n || 0).toLocaleString(); }
+    function fmtConfPct(n) { return n === null || n === undefined ? '—' : n.toFixed(1) + '%'; }
+    function fmtPollTime(iso) {
+        if (!iso) return '—';
+        var d = new Date(iso);
+        var pad = function(x) { return x < 10 ? '0' + x : '' + x; };
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+            + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    function applySnapshot(snap) {
+        // Top cards
+        document.getElementById('stat-total').textContent     = fmtNum(snap.total);
+        document.getElementById('stat-complete').textContent  = fmtNum((snap.status_counts || {}).complete);
+        document.getElementById('stat-today').textContent     = fmtNum(snap.today_completed);
+        document.getElementById('stat-confidence').textContent = fmtConfPct(snap.avg_confidence);
+
+        // Status breakdown
+        document.querySelectorAll('[data-status]').forEach(function(el) {
+            var key = el.getAttribute('data-status');
+            el.textContent = fmtNum((snap.status_counts || {})[key] || 0);
+        });
+
+        // Watermarks
+        (snap.watermarks || []).forEach(function(wm) {
+            var row = document.querySelector('#watermarks-list [data-site="' + wm.site_id + '"]');
+            if (!row) return;
+            var wmEl = row.querySelector('[data-field="watermark"]');
+            var pollEl = row.querySelector('[data-field="last-poll"]');
+            if (wmEl) wmEl.textContent = fmtNum(wm.last_dictation_id);
+            if (pollEl) pollEl.textContent = fmtPollTime(wm.last_poll_at);
+        });
+
+        // Recent — re-render the tbody and flash any rows whose id is new
+        var tbody = document.getElementById('recent-tbody');
+        if (!tbody) return;
+        var newHtml = '';
+        var newIds = new Set();
+        (snap.recent || []).forEach(function(t) {
+            newIds.add(t.id);
+            var siteColor = t.site_id === 'visage' ? 'bg-blue-100 text-blue-700'
+                : t.site_id === 'karisma' ? 'bg-purple-100 text-purple-700'
+                : 'bg-gray-100 text-gray-700';
+            var patient = (t.patient_family_name || '') + (t.patient_given_names ? ', ' + t.patient_given_names : '');
+            var conf = t.confidence ? (t.confidence * 100).toFixed(1) + '%' : '—';
+            var when = fmtPollTime(t.transcription_completed_at);
+            var isNew = !seenIds.has(t.id);
+            newHtml += '<tr class="hover:bg-gray-50 cursor-pointer' + (isNew ? ' flash-new' : '') + '"'
+                + ' data-id="' + t.id + '"'
+                + ' onclick="window.location=\'/transcriptions/' + t.id + '\'">'
+                + '<td class="px-4 py-3 text-xs"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + siteColor + '">' + (t.site_id || '') + '</span></td>'
+                + '<td class="px-4 py-3 text-sm font-medium text-indigo-600">' + escapeHtml(t.accession_number || '—') + '</td>'
+                + '<td class="px-4 py-3 text-sm text-gray-900">' + escapeHtml(patient || '—') + '</td>'
+                + '<td class="px-4 py-3 text-sm"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">' + escapeHtml(t.modality_code || '—') + '</span></td>'
+                + '<td class="px-4 py-3 text-sm text-gray-700">' + escapeHtml(t.doctor_family_name || '—') + '</td>'
+                + '<td class="px-4 py-3 text-sm text-gray-700">' + conf + '</td>'
+                + '<td class="px-4 py-3 text-sm text-gray-500">' + when + '</td>'
+                + '</tr>';
+        });
+        if (!newHtml) {
+            newHtml = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">No transcriptions yet</td></tr>';
+        }
+        tbody.innerHTML = newHtml;
+        seenIds = newIds;
+    }
+
+    function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.textContent = (s == null ? '' : String(s));
+        return d.innerHTML;
+    }
+
+    function connect() {
+        setIndicator('connecting');
+        es = new EventSource(url);
+        es.addEventListener('snapshot', function(ev) {
+            setIndicator('live');
+            try { applySnapshot(JSON.parse(ev.data)); }
+            catch (e) { console.warn('snapshot parse failed', e); }
+        });
+        es.addEventListener('bye', function() {
+            // Server closed the connection (duration cap). Reconnect immediately.
+            try { es.close(); } catch (e) {}
+            connect();
+        });
+        es.onerror = function() {
+            setIndicator('offline');
+            // EventSource auto-reconnects; just update indicator.
+        };
+        es.onopen = function() { setIndicator('live'); };
+    }
+
+    if (typeof EventSource !== 'undefined') {
+        connect();
+    } else {
+        setIndicator('offline');
+    }
+
+    // Close cleanly when navigating away
+    window.addEventListener('beforeunload', function() {
+        if (es) { try { es.close(); } catch (e) {} }
+    });
+})();
+</script>
 {% endblock %}

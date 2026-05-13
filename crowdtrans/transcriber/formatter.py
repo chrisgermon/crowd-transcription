@@ -1068,10 +1068,18 @@ def _load_custom_corrections() -> list[tuple[re.Pattern, str]]:
                     find = item.get("find", "")
                     replace = item.get("replace", "")
                     case_sensitive = item.get("case_sensitive", False)
+                    is_regex = item.get("regex", False)
                     if not find or find == replace:
                         continue
                     flags = 0 if case_sensitive else re.IGNORECASE
-                    pattern = re.compile(r'\b' + re.escape(find) + r'\b', flags)
+                    try:
+                        if is_regex:
+                            pattern = re.compile(find, flags)
+                        else:
+                            pattern = re.compile(r'\b' + re.escape(find) + r'\b', flags)
+                    except re.error as exc:
+                        logger.warning("Skipping invalid correction pattern %r: %s", find, exc)
+                        continue
                     _CUSTOM_CORRECTIONS.append((pattern, replace))
                 # Filler removals — words/phrases to strip entirely
                 for item in data.get("filler_removals", []):
