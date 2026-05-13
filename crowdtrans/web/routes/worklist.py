@@ -169,6 +169,26 @@ def worklist_list(
     })
 
 
+@router.get("/{transcription_id}/print")
+def worklist_print(request: Request, transcription_id: int):
+    """Print/PDF-ready view of a verified (or in-progress) report."""
+    with SessionLocal() as session:
+        txn = (
+            session.query(Transcription)
+            .options(defer(Transcription.words_json), defer(Transcription.paragraphs_json))
+            .filter_by(id=transcription_id)
+            .first()
+        )
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        report_text = txn.final_text or txn.formatted_text or ""
+    return templates.TemplateResponse("worklist/print.html", {
+        "request": request,
+        "txn": txn,
+        "report_text": report_text,
+    })
+
+
 @router.get("/{transcription_id}")
 def worklist_detail(request: Request, transcription_id: int):
     """Detail view for a single worklist item with copy and mark-as-copied."""

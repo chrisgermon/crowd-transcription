@@ -221,6 +221,78 @@ def _load_existing_rule_set() -> set[tuple[str, str]]:
     return pairs
 
 
+def record_edit_feedback(
+    session,
+    transcription_id: int,
+    doctor_id: str | None,
+    original_text: str,
+    edited_text: str,
+) -> int:
+    """Derive (wrong, right) pairs from a single typist edit and queue them
+    as pending CorrectionFeedback rows for later approval.
+
+    Skips:
+      - pairs already covered by enabled WordReplacement rules or formatter rules
+      - pairs the user has already accepted (→ live rule exists) or rejected
+      - noise pairs (single chars, stopwords, identical, very long)
+
+    Returns the number of new pending feedback rows inserted.
+    """
+    from crowdtrans.models import CorrectionFeedback
+
+    if not original_text or not edited_text or original_text == edited_text:
+        return 0
+
+    orig_tokens = _tokenize(original_text)
+    new_tokens = _tokenize(edited_text)
+    pairs = _find_word_replacements(orig_tokens, new_tokens)
+    if not pairs:
+        return 0
+
+    covered = _load_existing_rule_set()
+    # Existing pending/accepted/rejected pairs we shouldn't duplicate
+    existing = {
+        (r.original_text.lower().strip(), r.corrected_text.lower().strip(), r.status)
+        for r in session.query(CorrectionFeedback)
+        .filter(CorrectionFeedback.correction_type == "word")
+        .all()
+    }
+    existing_keys = {(o, c) for (o, c, _s) in existing}
+    rejected = {(o, c) for (o, c, s) in existing if s == "rejected"}
+
+    inserted = 0
+    seen_in_this_edit: set[tuple[str, str]] = set()
+    for wrong, right in pairs:
+        if _is_noise_pair(wrong, right):
+            continue
+        key = (wrong.strip().lower(), right.strip().lower())
+        if key in seen_in_this_edit or key in rejected:
+            continue
+        if key in covered:
+            continue
+        seen_in_this_edit.add(key)
+        # Insert a pending row whether or not one already exists, so the
+        # learning dashboard can show occurrence count by grouping rows.
+        # But suppress runaway duplicates from the same transcription.
+        already_here = any(
+            (o == key[0] and c == key[1]) for (o, c, _s) in existing if _s == "pending"
+        )
+        if already_here:
+            # already pending — bump nothing for now; future enhancement: counter column
+            continue
+        session.add(CorrectionFeedback(
+            transcription_id=transcription_id,
+            doctor_id=doctor_id,
+            correction_type="word",
+            original_text=wrong,
+            corrected_text=right,
+            status="pending",
+        ))
+        inserted += 1
+
+    return inserted
+
+
 def analyze_pairs(limit: int = 0) -> dict[str, Any]:
     """Analyze all transcript-report pairs and return comprehensive results.
 

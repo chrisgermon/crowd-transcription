@@ -10,7 +10,7 @@ from sqlalchemy import func, or_
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal
-from crowdtrans.models import Transcription, TranscriptionEdit, WordReplacement
+from crowdtrans.models import CorrectionFeedback, ReportTemplate, Transcription, TranscriptionEdit, WordReplacement
 
 router = APIRouter(prefix="/api")
 
@@ -97,6 +97,46 @@ def _build_stats_snapshot(site: str = "") -> dict:
         "watermarks": watermarks,
         "ts": datetime.datetime.utcnow().isoformat(),
     }
+
+
+@router.get("/changelog")
+def changelog(limit: int = Query(10, ge=1, le=100)):
+    """Return the most recent changelog entries parsed from CHANGELOG.md.
+
+    Markdown layout: `## YYYY-MM-DD` headings, bullet items beneath.
+    Each item becomes {date, title, body} where title is the bold lead-in
+    (e.g. "**Verify workflow**") and body is the remainder.
+    """
+    candidates = [
+        Path("/opt/crowdtrans/CHANGELOG.md"),
+        Path(__file__).resolve().parent.parent.parent.parent / "CHANGELOG.md",
+    ]
+    src = next((p for p in candidates if p.exists()), None)
+    if not src:
+        return {"entries": []}
+    raw = src.read_text(encoding="utf-8")
+    entries = []
+    current_date = None
+    import re as _re
+    for line in raw.splitlines():
+        m = _re.match(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$", line)
+        if m:
+            current_date = m.group(1)
+            continue
+        m = _re.match(r"^-\s+(.*)$", line)
+        if not m or not current_date:
+            continue
+        text = m.group(1).strip()
+        title = text
+        body = ""
+        bold = _re.match(r"^\*\*(.+?)\*\*\s*[—-]?\s*(.*)$", text)
+        if bold:
+            title = bold.group(1).strip()
+            body = bold.group(2).strip()
+        entries.append({"date": current_date, "title": title, "body": body})
+        if len(entries) >= limit:
+            break
+    return {"entries": entries}
 
 
 @router.get("/stats")
@@ -339,6 +379,37 @@ def mark_copied(transcription_id: int):
     return {"status": "ok"}
 
 
+@router.post("/worklist/{transcription_id}/verify")
+async def verify_report(transcription_id: int, request: Request):
+    """Sign off a report. Appends the radiologist's signature block, freezes
+    the result into final_text, and marks the worklist item as 'verified'.
+
+    Body: {verifier: str}
+    """
+    body = await request.json()
+    verifier = (body.get("verifier") or "").strip() or "anonymous"
+
+    with SessionLocal() as session:
+        txn = session.query(Transcription).filter_by(id=transcription_id).first()
+        if not txn:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        if not txn.formatted_text:
+            raise HTTPException(status_code=400, detail="No formatted text to verify")
+
+        from crowdtrans.transcriber.formatter import finalize_report_text
+        final = finalize_report_text(
+            txn.formatted_text,
+            str(txn.doctor_id) if txn.doctor_id else None,
+        )
+        txn.final_text = final
+        txn.worklist_status = "verified"
+        txn.verified_at = datetime.datetime.utcnow()
+        txn.verified_by = verifier
+        session.commit()
+
+    return {"status": "ok", "verified_at": txn.verified_at.isoformat(), "verified_by": verifier}
+
+
 @router.post("/worklist/{transcription_id}/mark-ready")
 def mark_ready(transcription_id: int):
     """Undo — mark a worklist item back as ready."""
@@ -565,9 +636,32 @@ async def edit_text(transcription_id: int, request: Request):
 
         # Update the live text
         txn.formatted_text = new_text
+
+        # Auto-learn: derive (wrong, right) pairs from this edit and queue
+        # them as pending CorrectionFeedback rows for approval. Best-effort;
+        # never block the save on a learner failure.
+        feedback_inserted = 0
+        try:
+            from crowdtrans.transcriber.learner import record_edit_feedback
+            feedback_inserted = record_edit_feedback(
+                session,
+                transcription_id=transcription_id,
+                doctor_id=str(txn.doctor_id) if txn.doctor_id else None,
+                original_text=original_text,
+                edited_text=new_text,
+            )
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).exception("record_edit_feedback failed")
+
         session.commit()
 
-    return {"status": "ok", "message": "Text saved", "edit_id": edit.id}
+    return {
+        "status": "ok",
+        "message": "Text saved",
+        "edit_id": edit.id,
+        "feedback_inserted": feedback_inserted,
+    }
 
 
 @router.get("/worklist/{transcription_id}/edit-history")
@@ -680,13 +774,26 @@ async def add_correction(request: Request):
     if ctype == "correction":
         find = (body.get("find") or "").strip()
         replace = (body.get("replace") or "").strip()
+        is_regex = bool(body.get("regex", False))
+        case_sensitive = bool(body.get("case_sensitive", False))
         if not find:
             raise HTTPException(status_code=400, detail="'find' is required")
+        if is_regex:
+            import re as _re
+            try:
+                _re.compile(find, 0 if case_sensitive else _re.IGNORECASE)
+            except _re.error as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}")
         # Check for duplicate
         for existing in data["corrections"]:
             if existing.get("find", "").lower() == find.lower():
                 raise HTTPException(status_code=409, detail=f"Correction for '{find}' already exists")
-        entry = {"find": find, "replace": replace, "case_sensitive": body.get("case_sensitive", False)}
+        entry = {
+            "find": find,
+            "replace": replace,
+            "case_sensitive": case_sensitive,
+            "regex": is_regex,
+        }
         if body.get("note"):
             entry["note"] = body["note"]
         data["corrections"].append(entry)
@@ -736,6 +843,90 @@ def delete_correction(index: int, ctype: str = Query("correction")):
     removed = lst.pop(index)
     _write_corrections(data)
     return {"status": "ok", "removed": removed}
+
+
+@router.post("/corrections/preview")
+async def preview_correction(request: Request):
+    """Preview a find/replace (regex or literal) against recent formatted_text rows.
+
+    Body: {pattern, replace, regex, case_sensitive, modality?, doctor?, limit?}
+    Returns up to `limit` matching transcriptions with before/after snippets.
+    """
+    import re as _re
+    body = await request.json()
+    pattern = (body.get("pattern") or body.get("find") or "").strip()
+    replace = body.get("replace") or ""
+    is_regex = bool(body.get("regex", False))
+    case_sensitive = bool(body.get("case_sensitive", False))
+    modality = (body.get("modality") or "").strip()
+    doctor = (body.get("doctor") or "").strip()
+    limit = int(body.get("limit") or 50)
+    if not pattern:
+        raise HTTPException(status_code=400, detail="'pattern' is required")
+
+    flags = 0 if case_sensitive else _re.IGNORECASE
+    try:
+        if is_regex:
+            compiled = _re.compile(pattern, flags)
+        else:
+            compiled = _re.compile(r"\b" + _re.escape(pattern) + r"\b", flags)
+    except _re.error as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}")
+
+    with SessionLocal() as session:
+        query = (
+            session.query(Transcription)
+            .filter(Transcription.formatted_text.isnot(None))
+        )
+        if modality:
+            query = query.filter(Transcription.modality_code == modality)
+        if doctor:
+            query = query.filter(Transcription.doctor_family_name.ilike(f"%{doctor}%"))
+        rows = (
+            query.order_by(Transcription.id.desc())
+            .limit(max(limit * 4, 100))
+            .all()
+        )
+
+    matches = []
+    total_scanned = 0
+    total_matches = 0
+    for txn in rows:
+        total_scanned += 1
+        text = txn.formatted_text or ""
+        hits = list(compiled.finditer(text))
+        if not hits:
+            continue
+        total_matches += len(hits)
+        # Take first 3 hits per row; show 60-char window
+        snippets = []
+        for h in hits[:3]:
+            start = max(0, h.start() - 40)
+            end = min(len(text), h.end() + 40)
+            before = text[start:end]
+            after = compiled.sub(replace, before)
+            snippets.append({
+                "before": before,
+                "after": after,
+                "match": h.group(0),
+            })
+        matches.append({
+            "id": txn.id,
+            "accession": txn.accession_number,
+            "doctor": txn.doctor_family_name,
+            "modality": txn.modality_code,
+            "match_count": len(hits),
+            "snippets": snippets,
+        })
+        if len(matches) >= limit:
+            break
+
+    return {
+        "scanned": total_scanned,
+        "matched_rows": len(matches),
+        "total_matches": total_matches,
+        "matches": matches,
+    }
 
 
 @router.get("/formatting-additions/{transcription_id}")
@@ -1032,6 +1223,193 @@ def get_attachments(transcription_id: int):
 # ---------------------------------------------------------------------------
 # Report templates from Karisma
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Correction feedback inbox — auto-learned pairs awaiting approval
+# ---------------------------------------------------------------------------
+
+
+@router.get("/correction-feedback")
+def list_correction_feedback(status: str = Query("pending"), limit: int = Query(100, ge=1, le=500)):
+    """Return CorrectionFeedback rows grouped by (original, corrected) pair.
+
+    Each group includes occurrence count, distinct doctors involved, and a
+    sample transcription id for context.
+    """
+    with SessionLocal() as session:
+        rows = (
+            session.query(CorrectionFeedback)
+            .filter(CorrectionFeedback.status == status)
+            .filter(CorrectionFeedback.correction_type == "word")
+            .order_by(CorrectionFeedback.created_at.desc())
+            .all()
+        )
+        groups: dict[tuple[str, str], dict] = {}
+        for r in rows:
+            key = (r.original_text.strip().lower(), r.corrected_text.strip().lower())
+            g = groups.get(key)
+            if g is None:
+                g = {
+                    "original": r.original_text,
+                    "corrected": r.corrected_text,
+                    "count": 0,
+                    "doctors": set(),
+                    "sample_transcription_id": r.transcription_id,
+                    "first_seen": r.created_at.isoformat() if r.created_at else None,
+                    "latest_seen": r.created_at.isoformat() if r.created_at else None,
+                }
+                groups[key] = g
+            g["count"] += 1
+            if r.doctor_id:
+                g["doctors"].add(str(r.doctor_id))
+            if r.created_at:
+                iso = r.created_at.isoformat()
+                if iso > (g["latest_seen"] or ""):
+                    g["latest_seen"] = iso
+        result = []
+        for g in groups.values():
+            g["doctors"] = sorted(g["doctors"])
+            result.append(g)
+        # Sort by occurrence count desc, then latest_seen desc
+        result.sort(key=lambda x: (-x["count"], -(len(x["latest_seen"] or ""))))
+        return {"groups": result[:limit], "total_groups": len(result)}
+
+
+@router.post("/correction-feedback/approve")
+async def approve_correction_feedback(request: Request):
+    """Approve a (original, corrected) pair → create a WordReplacement, mark rows accepted.
+
+    Body: {original, corrected, doctor_id? (string for per-doctor, omit for global)}
+    """
+    body = await request.json()
+    original = (body.get("original") or "").strip()
+    corrected = (body.get("corrected") or "").strip()
+    doctor_id = (body.get("doctor_id") or "").strip() or None
+    if not original or not corrected:
+        raise HTTPException(status_code=400, detail="'original' and 'corrected' required")
+
+    with SessionLocal() as session:
+        # Insert WordReplacement if no identical rule exists
+        existing_rule = (
+            session.query(WordReplacement)
+            .filter(WordReplacement.original == original)
+            .filter(WordReplacement.replacement == corrected)
+            .filter(WordReplacement.doctor_id == doctor_id)
+            .first()
+        )
+        if not existing_rule:
+            session.add(WordReplacement(
+                original=original,
+                replacement=corrected,
+                doctor_id=doctor_id,
+            ))
+
+        # Mark all feedback rows for this pair (any doctor) as accepted
+        feedback_rows = (
+            session.query(CorrectionFeedback)
+            .filter(CorrectionFeedback.correction_type == "word")
+            .filter(func.lower(CorrectionFeedback.original_text) == original.lower())
+            .filter(func.lower(CorrectionFeedback.corrected_text) == corrected.lower())
+            .filter(CorrectionFeedback.status == "pending")
+        )
+        updated = feedback_rows.update({"status": "accepted"}, synchronize_session=False)
+        session.commit()
+
+    try:
+        from crowdtrans.transcriber.formatter import _clear_word_replacement_cache
+        _clear_word_replacement_cache()
+    except Exception:
+        pass
+
+    return {"status": "ok", "rule_created": existing_rule is None, "feedback_rows_updated": updated}
+
+
+@router.post("/correction-feedback/reject")
+async def reject_correction_feedback(request: Request):
+    """Reject a (original, corrected) pair → mark all matching rows rejected.
+
+    Rejected pairs are never re-suggested by record_edit_feedback().
+    """
+    body = await request.json()
+    original = (body.get("original") or "").strip()
+    corrected = (body.get("corrected") or "").strip()
+    if not original or not corrected:
+        raise HTTPException(status_code=400, detail="'original' and 'corrected' required")
+
+    with SessionLocal() as session:
+        updated = (
+            session.query(CorrectionFeedback)
+            .filter(CorrectionFeedback.correction_type == "word")
+            .filter(func.lower(CorrectionFeedback.original_text) == original.lower())
+            .filter(func.lower(CorrectionFeedback.corrected_text) == corrected.lower())
+            .filter(CorrectionFeedback.status == "pending")
+            .update({"status": "rejected"}, synchronize_session=False)
+        )
+        session.commit()
+    return {"status": "ok", "rows_updated": updated}
+
+
+@router.get("/templates")
+def list_templates(
+    doctor_id: str = Query("", description="Filter by doctor id"),
+    doctor_surname: str = Query("", description="Filter by doctor family name"),
+    modality: str = Query("", description="Filter by modality code"),
+    body_part: str = Query("", description="Filter by body part"),
+    procedure: str = Query("", description="Substring match on procedure description"),
+    q: str = Query("", description="Substring match on template text"),
+    source: str = Query("", description="Filter by source: mined_existing or karisma_library"),
+    enabled_only: bool = Query(True),
+    limit: int = Query(25, ge=1, le=200),
+):
+    """List report templates from the local library.
+
+    Templates are ranked by source_count (popularity) so the most-used templates
+    surface first. Used by the SpeechMike agent and the web UI.
+    """
+    with SessionLocal() as session:
+        query = session.query(ReportTemplate)
+        if enabled_only:
+            query = query.filter(ReportTemplate.enabled.is_(True))
+        if doctor_id:
+            query = query.filter(ReportTemplate.doctor_id == doctor_id)
+        if doctor_surname:
+            query = query.filter(ReportTemplate.doctor_surname.ilike(f"%{doctor_surname}%"))
+        if modality:
+            query = query.filter(ReportTemplate.modality_code == modality)
+        if body_part:
+            query = query.filter(ReportTemplate.body_part.ilike(f"%{body_part}%"))
+        if procedure:
+            query = query.filter(ReportTemplate.procedure_description.ilike(f"%{procedure}%"))
+        if q:
+            query = query.filter(ReportTemplate.template_text.ilike(f"%{q}%"))
+        if source:
+            query = query.filter(ReportTemplate.source == source)
+
+        rows = (
+            query.order_by(ReportTemplate.source_count.desc(), ReportTemplate.last_seen_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return {
+            "templates": [
+                {
+                    "id": r.id,
+                    "doctor_id": r.doctor_id,
+                    "doctor_surname": r.doctor_surname,
+                    "modality_code": r.modality_code,
+                    "body_part": r.body_part,
+                    "procedure_code": r.procedure_code,
+                    "procedure_description": r.procedure_description,
+                    "template_name": r.template_name,
+                    "template_text": r.template_text,
+                    "source": r.source,
+                    "source_count": r.source_count,
+                    "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                }
+                for r in rows
+            ]
+        }
 
 
 @router.get("/templates/{transcription_id}")

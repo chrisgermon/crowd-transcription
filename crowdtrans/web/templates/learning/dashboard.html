@@ -37,6 +37,26 @@
     </div>
     {% endif %}
 
+    <!-- Pending corrections inbox (auto-learned from typist edits) -->
+    <div id="feedback-section" class="bg-white rounded-lg shadow-sm border hidden">
+        <div class="px-4 py-3 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">Pending corrections from typist edits</h2>
+            <p class="text-sm text-gray-500">Auto-learned word pairs. Approve to create a live rule; reject to silence forever.</p>
+        </div>
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Wrong</th>
+                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Right</th>
+                    <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Seen</th>
+                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Doctors</th>
+                    <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="feedback-tbody" class="divide-y divide-gray-200"></tbody>
+        </table>
+    </div>
+
     <!-- Custom Corrections -->
     <div class="bg-white rounded-lg shadow-sm border">
         <div class="px-4 py-3 border-b flex items-center justify-between">
@@ -81,11 +101,23 @@
                     <label class="block text-xs font-medium text-gray-500 mb-1">Note (optional)</label>
                     <input id="new-note" type="text" class="border border-gray-300 rounded px-2 py-1.5 text-sm w-40" placeholder="why this rule?">
                 </div>
+                <div id="field-options" class="flex flex-col gap-1 text-xs text-gray-600">
+                    <label class="inline-flex items-center gap-1">
+                        <input id="new-regex" type="checkbox" class="rounded"> Regex
+                    </label>
+                    <label class="inline-flex items-center gap-1">
+                        <input id="new-case" type="checkbox" class="rounded"> Case-sensitive
+                    </label>
+                </div>
+                <button onclick="previewCorrection()" id="preview-btn" class="bg-gray-600 text-white px-4 py-1.5 rounded-md text-sm font-medium hover:bg-gray-700">
+                    Preview
+                </button>
                 <button onclick="addCorrection()" class="bg-green-600 text-white px-4 py-1.5 rounded-md text-sm font-medium hover:bg-green-700">
                     Add
                 </button>
             </div>
             <p id="add-error" class="text-red-600 text-xs mt-2 hidden"></p>
+            <div id="preview-result" class="hidden mt-4 border-t pt-3"></div>
         </div>
 
         <!-- Corrections list -->
@@ -290,6 +322,8 @@ function addCorrection() {
     if (ctype === 'correction') {
         body.find = document.getElementById('new-find').value;
         body.replace = document.getElementById('new-replace').value;
+        body.regex = document.getElementById('new-regex').checked;
+        body.case_sensitive = document.getElementById('new-case').checked;
     } else if (ctype === 'filler') {
         body.phrase = document.getElementById('new-phrase').value;
     } else if (ctype === 'keyterm') {
@@ -326,8 +360,130 @@ function deleteCorrection(index, ctype) {
         .then(function() { loadCorrections(); });
 }
 
+function previewCorrection() {
+    var ctype = document.getElementById('new-type').value;
+    if (ctype !== 'correction') {
+        alert('Preview is only available for word corrections.');
+        return;
+    }
+    var pattern = document.getElementById('new-find').value;
+    var replace = document.getElementById('new-replace').value;
+    var regex = document.getElementById('new-regex').checked;
+    var caseSens = document.getElementById('new-case').checked;
+    var resultEl = document.getElementById('preview-result');
+    var btn = document.getElementById('preview-btn');
+    if (!pattern) {
+        resultEl.innerHTML = '<p class="text-red-600 text-xs">Enter a "Find" value first.</p>';
+        resultEl.classList.remove('hidden');
+        return;
+    }
+    btn.textContent = 'Previewing...';
+    btn.disabled = true;
+    fetch('/api/corrections/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pattern: pattern, replace: replace, regex: regex, case_sensitive: caseSens, limit: 25 }),
+    })
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+        return r.json();
+    })
+    .then(function(d) {
+        var html = '<div class="text-xs text-gray-600 mb-2">Scanned <b>' + d.scanned +
+                   '</b> recent transcriptions — <b>' + d.matched_rows +
+                   '</b> matched, <b>' + d.total_matches + '</b> total hits.</div>';
+        if (d.matches.length === 0) {
+            html += '<p class="text-gray-400 text-xs">No matches in the last ' + d.scanned + ' transcriptions.</p>';
+        } else {
+            html += '<div class="space-y-2 max-h-80 overflow-y-auto">';
+            d.matches.forEach(function(m) {
+                html += '<div class="border border-gray-200 rounded p-2 text-xs">'
+                    + '<div class="flex justify-between mb-1"><span class="text-gray-500">#' + m.id + ' ' + escHtml(m.accession || '') + ' · ' + escHtml(m.doctor || '') + ' · ' + escHtml(m.modality || '') + '</span><span class="text-gray-400">' + m.match_count + 'x</span></div>';
+                m.snippets.forEach(function(s) {
+                    html += '<div class="font-mono text-xs">'
+                        + '<div class="text-red-700">− ' + escHtml(s.before) + '</div>'
+                        + '<div class="text-green-700">+ ' + escHtml(s.after) + '</div>'
+                        + '</div>';
+                });
+                html += '</div>';
+            });
+            html += '</div>';
+        }
+        resultEl.innerHTML = html;
+        resultEl.classList.remove('hidden');
+    })
+    .catch(function(e) {
+        resultEl.innerHTML = '<p class="text-red-600 text-xs">' + escHtml(e.message) + '</p>';
+        resultEl.classList.remove('hidden');
+    })
+    .finally(function() {
+        btn.textContent = 'Preview';
+        btn.disabled = false;
+    });
+}
+
 // Load corrections on page load
 document.addEventListener('DOMContentLoaded', loadCorrections);
+document.addEventListener('DOMContentLoaded', loadFeedback);
+
+function loadFeedback() {
+    fetch('/api/correction-feedback?status=pending&limit=100')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var section = document.getElementById('feedback-section');
+            var tbody = document.getElementById('feedback-tbody');
+            if (!data.groups || data.groups.length === 0) {
+                section.classList.add('hidden');
+                return;
+            }
+            section.classList.remove('hidden');
+            var html = '';
+            data.groups.forEach(function(g) {
+                var oEsc = escHtml(g.original);
+                var cEsc = escHtml(g.corrected);
+                var doctorsLabel = g.doctors && g.doctors.length ? g.doctors.join(', ') : '—';
+                var doctorApprove = (g.doctors && g.doctors.length === 1)
+                    ? '<button onclick="approveFeedback(\'' + jsEsc(g.original) + '\',\'' + jsEsc(g.corrected) + '\',\'' + jsEsc(g.doctors[0]) + '\')" class="text-indigo-600 hover:underline text-xs mr-2">Approve for Dr ' + escHtml(g.doctors[0]) + '</button>'
+                    : '';
+                html += '<tr class="hover:bg-gray-50">'
+                    + '<td class="px-4 py-2 text-sm font-mono text-red-700">' + oEsc + '</td>'
+                    + '<td class="px-4 py-2 text-sm font-mono text-green-700">' + cEsc + '</td>'
+                    + '<td class="px-4 py-2 text-right text-sm text-gray-600">' + g.count + '×</td>'
+                    + '<td class="px-4 py-2 text-xs text-gray-500">' + escHtml(doctorsLabel) + '</td>'
+                    + '<td class="px-4 py-2 text-right whitespace-nowrap">'
+                    + doctorApprove
+                    + '<button onclick="approveFeedback(\'' + jsEsc(g.original) + '\',\'' + jsEsc(g.corrected) + '\')" class="text-green-600 hover:underline text-xs mr-2">Approve global</button>'
+                    + '<button onclick="rejectFeedback(\'' + jsEsc(g.original) + '\',\'' + jsEsc(g.corrected) + '\')" class="text-red-500 hover:underline text-xs">Reject</button>'
+                    + '</td></tr>';
+            });
+            tbody.innerHTML = html;
+        })
+        .catch(function() {});
+}
+
+function jsEsc(s) {
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function approveFeedback(original, corrected, doctorId) {
+    var body = { original: original, corrected: corrected };
+    if (doctorId) body.doctor_id = doctorId;
+    fetch('/api/correction-feedback/approve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function() { loadFeedback(); loadCorrections(); });
+}
+
+function rejectFeedback(original, corrected) {
+    fetch('/api/correction-feedback/reject', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ original: original, corrected: corrected }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function() { loadFeedback(); });
+}
 
 function triggerLearning() {
     const btn = document.getElementById('run-btn');

@@ -556,6 +556,49 @@ ORDER BY sub.TemplateName
 """
 
 
+REPORT_TEMPLATES_ALL_QUERY = """\
+SELECT sub.TemplateName, sub.TemplateCode, sub.TemplateDescription, sub.TemplateBuffer
+FROM (
+    SELECT RT.[Name] AS TemplateName,
+           RT.Code AS TemplateCode,
+           RT.Description AS TemplateDescription,
+           E.Buffer AS TemplateBuffer,
+           ROW_NUMBER() OVER (PARTITION BY RT.[Name] ORDER BY RT.TransactionKey DESC) AS rn
+    FROM [Version].[Karisma.Report.Template] RT
+    JOIN [System].[Extent] E ON E.[Key] = RT.BufferKey
+    WHERE RT.Key_Deleted = 0
+      AND E.Buffer IS NOT NULL
+) sub
+WHERE sub.rn = 1
+ORDER BY sub.TemplateName
+"""
+
+
+def fetch_all_report_templates(site: SiteConfig) -> list[dict[str, str]]:
+    """Fetch the entire Karisma report template library (latest version of each).
+
+    Returns one entry per unique template name, with the most recent revision's
+    contents converted to plain text.
+    """
+    conn = _get_connection(site)
+    try:
+        result = []
+        with conn.cursor(as_dict=True) as cur:
+            cur.execute(REPORT_TEMPLATES_ALL_QUERY)
+            for row in cur:
+                entry = {
+                    "name": row["TemplateName"],
+                    "code": row["TemplateCode"],
+                    "description": row["TemplateDescription"],
+                }
+                raw = bytes(row["TemplateBuffer"]) if row["TemplateBuffer"] else None
+                entry["text"] = _extract_plain_text_from_wp_xml(raw) if raw else ""
+                result.append(entry)
+        return result
+    finally:
+        conn.close()
+
+
 def fetch_report_templates(
     site: SiteConfig,
     doctor_surname: str | None = None,
@@ -778,11 +821,60 @@ ORDER BY RIA.TransactionKey DESC
 """
 
 
+def _fetch_external_extent(handle: bytes) -> bytes | None:
+    """Resolve a Kestral external extent by Handle (16-byte GUID).
+
+    Karisma stores large PDFs/images outside the DB. The Handle is a binary
+    GUID — typically used as a filename under a configured share. This
+    function looks for the file under env-configured roots and returns its
+    bytes if found.
+
+    Configure via env: KARISMA_EXTENT_ROOTS = colon-separated absolute
+    paths to search. The file is expected to be named after the GUID
+    (with or without dashes, with or without the original format extension).
+    Returns None when not found.
+    """
+    import os
+    import uuid as _uuid
+    from pathlib import Path
+
+    roots_env = os.environ.get("KARISMA_EXTENT_ROOTS", "")
+    if not roots_env:
+        return None
+    try:
+        guid_le = _uuid.UUID(bytes_le=handle)
+        guid_be = _uuid.UUID(bytes=handle)
+    except Exception:
+        return None
+
+    candidates = {
+        str(guid_le), str(guid_le).replace("-", ""), str(guid_le).upper(),
+        str(guid_be), str(guid_be).replace("-", ""), str(guid_be).upper(),
+    }
+    for root in roots_env.split(":"):
+        root = root.strip()
+        if not root:
+            continue
+        rp = Path(root)
+        if not rp.exists():
+            continue
+        for cand in candidates:
+            for suffix in ("", ".pdf", ".jpeg", ".jpg", ".png", ".bin"):
+                p = rp / f"{cand}{suffix}"
+                if p.is_file():
+                    try:
+                        return p.read_bytes()
+                    except OSError:
+                        pass
+    return None
+
+
 def fetch_referral_attachments(site: SiteConfig, request_key: int) -> list[dict[str, Any]]:
     """Fetch referral PDF attachments for a request.
 
     Returns list of dicts with keys: name, data, format, length, external.
-    When external=True, data is empty (blob stored on Karisma filesystem).
+    When external=True, data is empty unless KARISMA_EXTENT_ROOTS is configured
+    and the file is found there.
     """
     if not request_key:
         return []
@@ -793,12 +885,26 @@ def fetch_referral_attachments(site: SiteConfig, request_key: int) -> list[dict[
             results = []
             for row in cur:
                 name, buf, fmt, length, handle = row
+                if buf:
+                    data = bytes(buf)
+                    external = False
+                elif handle:
+                    fetched = _fetch_external_extent(bytes(handle))
+                    if fetched:
+                        data = fetched
+                        external = False
+                    else:
+                        data = b""
+                        external = True
+                else:
+                    data = b""
+                    external = False
                 results.append({
                     "name": name or "referral",
-                    "data": bytes(buf) if buf else b"",
+                    "data": data,
                     "format": (fmt or "").lstrip(".") or "pdf",
                     "length": length or 0,
-                    "external": buf is None and handle is not None,
+                    "external": external,
                 })
             return results
     finally:

@@ -53,6 +53,9 @@ def _migrate_add_columns(engine_):
             ("order_notes", "TEXT"),
             ("doctor_qualifications", "TEXT"),
             ("doctor_user_key", "BIGINT"),
+            ("verified_at", "DATETIME"),
+            ("verified_by", "TEXT"),
+            ("final_text", "TEXT"),
         ],
     }
 

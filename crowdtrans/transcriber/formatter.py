@@ -200,6 +200,27 @@ def _load_radiologist_signatures() -> dict[str, str]:
     return _RADIOLOGIST_CACHE
 
 
+def finalize_report_text(formatted_text: str, doctor_id: str | None) -> str:
+    """Append the radiologist signature block to a finalised report.
+
+    Used on sign-off to freeze the report into Transcription.final_text. If the
+    text already ends with the signature (e.g. typist typed it manually), it is
+    not appended again.
+    """
+    body = (formatted_text or "").rstrip()
+    sig = None
+    if doctor_id:
+        sig = _load_radiologist_signatures().get(str(doctor_id))
+    if not sig:
+        return body
+    sig_block = sig.strip()
+    if not sig_block:
+        return body
+    if body.endswith(sig_block):
+        return body
+    return body + "\n\n" + sig_block
+
+
 def _clear_radiologist_cache():
     """Clear cached radiologist signatures (called when settings change)."""
     global _RADIOLOGIST_CACHE

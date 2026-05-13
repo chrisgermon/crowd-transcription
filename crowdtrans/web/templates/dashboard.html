@@ -41,6 +41,45 @@
     </div>
 </div>
 
+<!-- Latest changes -->
+<div class="bg-white rounded-lg shadow mb-8">
+    <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-gray-900">Latest changes</h2>
+        <span class="text-xs text-gray-400">most recent updates to CrowdScription</span>
+    </div>
+    <ul id="changelog-list" class="divide-y divide-gray-100">
+        <li class="px-5 py-3 text-sm text-gray-400">Loading…</li>
+    </ul>
+</div>
+
+<script>
+fetch('/api/changelog?limit=12')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var list = document.getElementById('changelog-list');
+        if (!data.entries || data.entries.length === 0) {
+            list.innerHTML = '<li class="px-5 py-3 text-sm text-gray-400">No changelog entries yet.</li>';
+            return;
+        }
+        var html = '';
+        data.entries.forEach(function(e) {
+            var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+            html += '<li class="px-5 py-3 flex gap-4">'
+                + '<span class="shrink-0 text-xs font-mono text-gray-400 w-24">' + esc(e.date) + '</span>'
+                + '<div class="flex-1">'
+                + '<div class="text-sm font-medium text-gray-900">' + esc(e.title) + '</div>'
+                + (e.body ? '<div class="text-xs text-gray-500 mt-0.5">' + esc(e.body) + '</div>' : '')
+                + '</div>'
+                + '</li>';
+        });
+        list.innerHTML = html;
+    })
+    .catch(function() {
+        document.getElementById('changelog-list').innerHTML =
+            '<li class="px-5 py-3 text-sm text-gray-400">Failed to load changelog.</li>';
+    });
+</script>
+
 <!-- Status + Service info -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
     <div class="bg-white rounded-lg shadow p-5">

@@ -560,6 +560,56 @@ def _discover(session, site: SiteConfig) -> int:
     return fn(session, site, wm)
 
 
+def _sync_ready_worklist(session, site: SiteConfig) -> int:
+    """For each 'ready' worklist item, check Karisma for a finalised report.
+
+    If Karisma now has a typed report (the study was dictated outside
+    CrowdScription), mark the item as verified so it falls off the typist's
+    worklist. Returns the number of items moved.
+    """
+    if site.ris_type != "karisma":
+        return 0
+    try:
+        from crowdtrans.karisma import fetch_reports
+    except Exception:
+        return 0
+
+    ready_items = (
+        session.query(Transcription)
+        .filter(
+            Transcription.site_id == site.site_id,
+            Transcription.status == "complete",
+            Transcription.worklist_status == "ready",
+            Transcription.source_dictation_id.isnot(None),
+        )
+        .limit(500)
+        .all()
+    )
+    if not ready_items:
+        return 0
+    keys = [int(t.source_dictation_id) for t in ready_items]
+    try:
+        reports = fetch_reports(site, keys)
+    except Exception:
+        logger.exception("[%s] worklist sync: fetch_reports failed", site.site_id)
+        return 0
+
+    moved = 0
+    now = datetime.datetime.utcnow()
+    for t in ready_items:
+        text = reports.get(int(t.source_dictation_id))
+        if not text or len(text) < 20:
+            continue
+        t.worklist_status = "verified"
+        t.verified_at = now
+        t.verified_by = "karisma"
+        t.final_text = text
+        moved += 1
+    if moved:
+        logger.info("[%s] worklist sync moved %d items to verified (typed in Karisma)", site.site_id, moved)
+    return moved
+
+
 def _process_pending(session, site: SiteConfig) -> int:
     fn = _PROCESS.get(site.ris_type)
     if not fn:
@@ -624,7 +674,8 @@ def run(site_id: str | None = None):
                 with get_db() as session:
                     discovered = _discover(session, site)
                     processed = _process_pending(session, site)
-                    if discovered > 0 or processed > 0:
+                    moved = _sync_ready_worklist(session, site)
+                    if discovered > 0 or processed > 0 or moved > 0:
                         any_work = True
                     # Backfill disabled — only process new dictations
                     # _backfill_patient_data(session, site)

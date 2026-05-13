@@ -197,8 +197,22 @@
                 Undo — Mark as Ready
             </button>
             <span class="text-sm text-gray-500">Copied {{ txn.copied_at.strftime('%Y-%m-%d %H:%M') if txn.copied_at else '' }}</span>
+            <button onclick="verifyReport()" id="verify-btn"
+                    class="inline-flex items-center px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700">
+                Verify &amp; Sign Off
+            </button>
+            <a href="/worklist/{{ txn.id }}/print" target="_blank"
+               class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                Print / PDF
+            </a>
             {% elif txn.worklist_status == 'verified' %}
-            <span class="text-sm text-green-600 font-medium">Report verified in Karisma</span>
+            <span class="text-sm text-green-700 font-medium">
+                Verified by {{ txn.verified_by or '?' }} · {{ txn.verified_at.strftime('%Y-%m-%d %H:%M') if txn.verified_at else '' }}
+            </span>
+            <a href="/worklist/{{ txn.id }}/print" target="_blank"
+               class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                Print / PDF
+            </a>
             {% endif %}
         </div>
     </div>
@@ -799,6 +813,29 @@
     window.markReady = function() {
         var btn = document.getElementById('undo-btn');
         if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+        window.verifyReport = function() {
+            var verifier = window.prompt('Verifier (your name/initials):', 'doctor');
+            if (verifier === null) return;
+            var btn = document.getElementById('verify-btn');
+            btn.disabled = true;
+            btn.textContent = 'Verifying...';
+            fetch('/api/worklist/' + TXN_ID + '/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ verifier: verifier }),
+            })
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+                return r.json();
+            })
+            .then(function() { window.location.reload(); })
+            .catch(function(e) {
+                alert('Verify failed: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = 'Verify & Sign Off';
+            });
+        };
+
         fetch('/api/worklist/' + TXN_ID + '/mark-ready', { method: 'POST' })
             .then(function(r) { return r.json(); })
             .then(function() { location.reload(); })
@@ -1116,8 +1153,10 @@
                     html += '<h4 class="text-xs font-semibold text-gray-600 mb-1">Referral Documents</h4>';
                     data.referrals.forEach(function(att, idx) {
                         if (att.external) {
-                            html += '<div class="mb-2 p-2 bg-gray-50 border rounded"><p class="text-xs text-gray-500">' + escapeHTML(att.name) + '</p>'
-                                + '<p class="text-xs text-gray-400 italic">Available in Karisma (stored externally)</p></div>';
+                            html += '<div class="mb-2 p-2 bg-amber-50 border border-amber-200 rounded">'
+                                + '<p class="text-xs font-medium text-amber-800">' + escapeHTML(att.name) + ' <span class="text-amber-600">(external)</span></p>'
+                                + '<p class="text-xs text-amber-700">This document is stored on the Karisma extent server, not in the database. CrowdScription can\'t retrieve it directly yet — view in Karisma to open.</p>'
+                                + '</div>';
                         } else if (att.format === 'pdf') {
                             html += '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
                                 + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded" style="height:400px;"></iframe></div>';

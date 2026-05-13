@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Report — {{ txn.accession_number or txn.id }}</title>
+    <style>
+        @page { margin: 18mm; }
+        body { font-family: "Calibri", "Segoe UI", Arial, sans-serif; color: #111; font-size: 11pt; line-height: 1.4; max-width: 720px; margin: 0 auto; padding: 16px; }
+        header { border-bottom: 1px solid #999; padding-bottom: 8px; margin-bottom: 16px; }
+        h1 { font-size: 14pt; margin: 0 0 4px; }
+        .meta { font-size: 10pt; color: #444; }
+        .meta div { margin: 1px 0; }
+        .report { white-space: pre-wrap; font-family: "Calibri", "Segoe UI", Arial, sans-serif; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 9pt; }
+        .badge.verified { background: #d1fae5; color: #065f46; }
+        .badge.draft { background: #fef3c7; color: #92400e; }
+        .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 9pt; color: #777; }
+        @media print { .no-print { display: none; } body { padding: 0; } }
+        .no-print { text-align: right; margin-bottom: 12px; }
+        .no-print button { background: #4f46e5; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="no-print">
+        <button onclick="window.print()">Print / Save as PDF</button>
+    </div>
+    <header>
+        <h1>{{ txn.procedure_description or "Report" }}</h1>
+        <div class="meta">
+            <div><strong>Patient:</strong>
+                {{ [txn.patient_title, txn.patient_given_names, txn.patient_family_name] | select | join(" ") }}
+                {% if txn.patient_ur %} · UR {{ txn.patient_ur }}{% endif %}
+                {% if txn.patient_dob %} · DOB {{ txn.patient_dob }}{% endif %}
+            </div>
+            <div><strong>Accession:</strong> {{ txn.accession_number or "—" }}
+                · <strong>Modality:</strong> {{ txn.modality_code or "—" }}
+                · <strong>Facility:</strong> {{ txn.facility_name or "—" }}</div>
+            <div><strong>Reporting Dr:</strong>
+                {{ [txn.doctor_title, txn.doctor_given_names, txn.doctor_family_name] | select | join(" ") }}
+                {% if txn.doctor_qualifications %} · {{ txn.doctor_qualifications }}{% endif %}
+            </div>
+            <div><strong>Dictated:</strong> {{ txn.dictation_date.strftime("%Y-%m-%d %H:%M") if txn.dictation_date else "—" }}
+                · <strong>Status:</strong>
+                {% if txn.worklist_status == "verified" %}
+                    <span class="badge verified">Verified by {{ txn.verified_by or "?" }} at {{ txn.verified_at.strftime("%Y-%m-%d %H:%M") if txn.verified_at else "" }}</span>
+                {% else %}
+                    <span class="badge draft">Draft ({{ txn.worklist_status }})</span>
+                {% endif %}
+            </div>
+        </div>
+    </header>
+    <div class="report">{{ report_text }}</div>
+    <div class="footer">
+        CrowdScription · Transcription #{{ txn.id }} · printed {{ now() if now is defined else "" }}
+    </div>
+</body>
+</html>

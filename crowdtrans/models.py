@@ -158,6 +158,9 @@ class Transcription(Base):
     # Worklist tracking
     worklist_status = Column(String, nullable=False, default="ready")  # ready, copied, verified
     copied_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    verified_by = Column(String, nullable=True)
+    final_text = Column(Text, nullable=True)  # frozen formatted_text + signature at verify time
 
     # Timestamps
     dictation_date = Column(DateTime, nullable=True)
@@ -277,6 +280,41 @@ class WordReplacement(Base):
     __table_args__ = (
         Index("ix_wr_doctor", "doctor_id"),
         Index("ix_wr_original", "original"),
+    )
+
+
+class ReportTemplate(Base):
+    """Local library of report templates, seeded from Karisma or mined from existing_report_text."""
+    __tablename__ = "report_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    doctor_id = Column(String, nullable=True)
+    doctor_surname = Column(String, nullable=True)
+
+    modality_code = Column(String, nullable=True)
+    body_part = Column(String, nullable=True)
+    procedure_code = Column(String, nullable=True)
+    procedure_description = Column(String, nullable=True)
+
+    template_name = Column(String, nullable=True)
+    template_text = Column(Text, nullable=False)
+    text_hash = Column(String, nullable=False)
+
+    source = Column(String, nullable=False)  # 'mined_existing' or 'karisma_library'
+    source_count = Column(Integer, nullable=False, default=1)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    enabled = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("doctor_id", "procedure_description", "text_hash", name="uq_template"),
+        Index("ix_tpl_doctor", "doctor_id"),
+        Index("ix_tpl_modality", "modality_code"),
+        Index("ix_tpl_proc", "procedure_description"),
+        Index("ix_tpl_enabled", "enabled"),
     )
 
 

@@ -304,5 +304,153 @@ def llm_reformat(limit):
         click.echo(f"\nDone. {success} formatted, {failed} failed out of {len(txns)} total.")
 
 
+@cli.command("mine-templates")
+@click.option(
+    "--source",
+    type=click.Choice(["mined", "karisma", "both"]),
+    default="both",
+    help="mined = group existing_report_text from transcriptions; karisma = pull from Karisma's Report.Template library; both = run both.",
+)
+@click.option("--limit", default=0, type=int, help="Process at most N rows (0 = all)")
+@click.option("--min-len", default=80, type=int, help="Skip templates shorter than this many chars")
+@click.option("--dry-run", is_flag=True, help="Don't write to DB, just print counts")
+def mine_templates(source, limit, min_len, dry_run):
+    """Build/refresh the local report templates library."""
+    import datetime as _dt
+    import hashlib
+    import re as _re
+
+    from crowdtrans.database import SessionLocal, init_db
+    from crowdtrans.models import ReportTemplate, Transcription
+    init_db()
+
+    def _norm_hash(text: str) -> str:
+        norm = _re.sub(r"\s+", " ", text or "").strip().lower()
+        return hashlib.sha1(norm.encode("utf-8")).hexdigest()
+
+    mined_seen = 0
+    mined_new = 0
+    mined_updated = 0
+
+    if source in ("mined", "both"):
+        click.echo("Mining existing_report_text from transcriptions...")
+        with SessionLocal() as session:
+            q = (
+                session.query(Transcription)
+                .filter(Transcription.existing_report_text.isnot(None))
+                .filter(Transcription.site_id == "karisma")
+            )
+            if limit > 0:
+                q = q.limit(limit)
+            for txn in q.yield_per(500):
+                text = (txn.existing_report_text or "").strip()
+                if len(text) < min_len:
+                    continue
+                mined_seen += 1
+                text_hash = _norm_hash(text)
+
+                existing = (
+                    session.query(ReportTemplate)
+                    .filter_by(
+                        doctor_id=txn.doctor_id,
+                        procedure_description=txn.procedure_description,
+                        text_hash=text_hash,
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.source_count += 1
+                    existing.last_seen_at = _dt.datetime.utcnow()
+                    mined_updated += 1
+                else:
+                    if not dry_run:
+                        session.add(ReportTemplate(
+                            doctor_id=txn.doctor_id,
+                            doctor_surname=txn.doctor_family_name,
+                            modality_code=txn.modality_code,
+                            procedure_code=txn.service_code,
+                            procedure_description=txn.procedure_description,
+                            template_text=text,
+                            text_hash=text_hash,
+                            source="mined_existing",
+                            source_count=1,
+                            last_seen_at=_dt.datetime.utcnow(),
+                        ))
+                    mined_new += 1
+
+                if mined_seen % 500 == 0:
+                    if not dry_run:
+                        session.commit()
+                    click.echo(f"  scanned {mined_seen:,} (new={mined_new}, +seen={mined_updated})")
+            if not dry_run:
+                session.commit()
+        click.echo(f"Mined: scanned={mined_seen:,}  new templates={mined_new}  existing seen again={mined_updated}")
+
+    karisma_inserted = 0
+    karisma_skipped = 0
+
+    if source in ("karisma", "both"):
+        click.echo("Pulling Karisma report template library...")
+        from crowdtrans.config_store import get_config_store
+        store = get_config_store()
+        site = next((s for s in store.get_enabled_site_configs() if s.ris_type == "karisma"), None)
+        if not site:
+            click.echo("  no Karisma site configured; skipping", err=True)
+        else:
+            from crowdtrans.karisma import fetch_all_report_templates
+
+            try:
+                tpls = fetch_all_report_templates(site)
+            except Exception as exc:
+                click.echo(f"  karisma error: {exc}", err=True)
+                tpls = []
+            click.echo(f"  fetched {len(tpls):,} templates from Karisma library")
+
+            with SessionLocal() as session:
+                for idx, tpl in enumerate(tpls, 1):
+                    text = (tpl.get("text") or "").strip()
+                    if len(text) < min_len:
+                        karisma_skipped += 1
+                        continue
+                    text_hash = _norm_hash(text)
+                    # Karisma library entries are keyed by template name, not doctor/procedure.
+                    existing = (
+                        session.query(ReportTemplate)
+                        .filter_by(
+                            doctor_id=None,
+                            procedure_description=tpl.get("description"),
+                            text_hash=text_hash,
+                        )
+                        .first()
+                    )
+                    if existing:
+                        existing.source_count += 1
+                        existing.last_seen_at = _dt.datetime.utcnow()
+                    else:
+                        if not dry_run:
+                            session.add(ReportTemplate(
+                                doctor_id=None,
+                                procedure_description=tpl.get("description"),
+                                template_name=tpl.get("name"),
+                                procedure_code=tpl.get("code"),
+                                template_text=text,
+                                text_hash=text_hash,
+                                source="karisma_library",
+                                source_count=1,
+                                last_seen_at=_dt.datetime.utcnow(),
+                            ))
+                        karisma_inserted += 1
+
+                    if idx % 500 == 0:
+                        if not dry_run:
+                            session.commit()
+                        click.echo(f"    processed {idx}/{len(tpls)} (inserted={karisma_inserted})")
+                if not dry_run:
+                    session.commit()
+        click.echo(f"Karisma: inserted={karisma_inserted}  skipped (too short)={karisma_skipped}")
+
+    click.echo(f"\nDone.{'  (dry-run, no writes)' if dry_run else ''}")
+
+
 if __name__ == "__main__":
     cli()
