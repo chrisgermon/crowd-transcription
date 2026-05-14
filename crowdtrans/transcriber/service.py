@@ -677,10 +677,16 @@ def _process_pending(session, site: SiteConfig) -> int:
     if not fn:
         return 0
 
+    # Order: urgent dictations first (lowest priority_rank wins), then newest
+    # dictation first within each priority bucket. NULL priority sorts last so
+    # orphans/unknown-priority items don't preempt prioritised work.
     pending = (
         session.query(Transcription)
         .filter(Transcription.site_id == site.site_id, Transcription.status == "pending")
-        .order_by(Transcription.source_dictation_id.desc())
+        .order_by(
+            Transcription.priority_rank.asc().nullslast(),
+            Transcription.source_dictation_id.desc(),
+        )
         .limit(site.batch_size)
         .all()
     )
