@@ -320,6 +320,71 @@ def fetch_worklist_sync_state(
         conn.close()
 
 
+# Lookup by accession (Request.Record.InternalIdentifier). Catches the case
+# where the typist abandoned our dictation and typed a fresh report directly
+# in Karisma — same Request.Record but a NEW Report.Instance that our
+# dictation's Path 1/2 join doesn't know about.
+WORKLIST_SYNC_BY_ACCESSION_QUERY = """\
+SELECT RR.InternalIdentifier AS Accession,
+       RI.[Key] AS ReportInstanceKey,
+       RI.ProcessStatus AS ProcessStatus,
+       PT.[Name] AS PriorityName,
+       PT.[Rank] AS PriorityRank
+FROM [Version].[Karisma.Request.Record] RR
+JOIN [Version].[Karisma.Report.Instance] RI
+    ON RI.RequestRecordKey = RR.[Key]
+LEFT JOIN [Version].[Karisma.Request.PriorityType] PT
+    ON PT.[Key] = RR.ReportCompletionPriorityTypeKey
+WHERE RR.InternalIdentifier IN ({placeholders})
+  AND RR.IsDiscarded = 0
+  AND RR.Key_Deleted = 0
+  AND RI.IsDiscarded = 0
+"""
+
+
+def fetch_worklist_sync_state_by_accession(
+    site: SiteConfig, accessions: list[str]
+) -> dict[str, dict[str, Any]]:
+    """For each Request.Record accession, return the highest-status Report.Instance.
+
+    A single Request.Record can have multiple Report.Instance rows (amendment
+    chain, abandoned-then-retyped drafts, etc.) — we pick the one with the
+    highest ProcessStatus so a typed report wins over an empty draft.
+    """
+    if not accessions:
+        return {}
+    accessions = [a for a in accessions if a]
+    if not accessions:
+        return {}
+    conn = _get_connection(site)
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        batch_size = 500
+        for i in range(0, len(accessions), batch_size):
+            batch = accessions[i:i + batch_size]
+            placeholders = ",".join(["%s"] * len(batch))
+            query = WORKLIST_SYNC_BY_ACCESSION_QUERY.format(placeholders=placeholders)
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(batch))
+                for row in cur:
+                    acc = row["Accession"]
+                    new_entry = {
+                        "report_instance_key": row["ReportInstanceKey"],
+                        "process_status": row.get("ProcessStatus"),
+                        "priority_name": row.get("PriorityName"),
+                        "priority_rank": row.get("PriorityRank"),
+                    }
+                    existing = out.get(acc)
+                    if existing is None or (
+                        (new_entry["process_status"] or 0)
+                        > (existing["process_status"] or 0)
+                    ):
+                        out[acc] = new_entry
+        return out
+    finally:
+        conn.close()
+
+
 def fetch_reports(site: SiteConfig, transaction_keys: list[int]) -> dict[int, str]:
     """Fetch typed report text for a batch of dictation TransactionKeys.
 

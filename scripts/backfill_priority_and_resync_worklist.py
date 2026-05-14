@@ -22,7 +22,11 @@ import pymssql
 
 from crowdtrans.config_store import get_config_store
 from crowdtrans.database import SessionLocal, init_db
-from crowdtrans.karisma import _get_connection, fetch_worklist_sync_state
+from crowdtrans.karisma import (
+    _get_connection,
+    fetch_worklist_sync_state,
+    fetch_worklist_sync_state_by_accession,
+)
 from crowdtrans.models import Transcription
 from crowdtrans.transcriber.service import _VERIFIED_PROCESS_STATUSES
 
@@ -65,14 +69,22 @@ def sweep_ready(site_id: str, batch_size: int = 2000) -> tuple[int, int]:
             if not ready:
                 break
             last_id = ready[-1].id
-            keys = [int(t.source_dictation_id) for t in ready]
+
+            accessions = list({t.internal_identifier for t in ready if t.internal_identifier})
+            tk_orphans = [int(t.source_dictation_id) for t in ready if not t.internal_identifier]
             t0 = time.time()
-            state = fetch_worklist_sync_state(site, keys)
+            by_acc = fetch_worklist_sync_state_by_accession(site, accessions)
+            by_tk = fetch_worklist_sync_state(site, tk_orphans) if tk_orphans else {}
+
             now = datetime.datetime.utcnow()
             verified_here = 0
             refreshed_here = 0
             for t in ready:
-                entry = state.get(int(t.source_dictation_id))
+                entry = None
+                if t.internal_identifier:
+                    entry = by_acc.get(t.internal_identifier)
+                if entry is None:
+                    entry = by_tk.get(int(t.source_dictation_id))
                 if not entry:
                     continue
                 status = entry.get("process_status")

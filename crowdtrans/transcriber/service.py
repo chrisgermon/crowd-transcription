@@ -572,16 +572,23 @@ _VERIFIED_PROCESS_STATUSES = {3, 4, 7}
 def _sync_ready_worklist(session, site: SiteConfig, batch_size: int = 2000) -> int:
     """For each 'ready' worklist item, check Karisma for a finalised report.
 
-    Uses a dual-path query (Path 1 via InstanceChange + Path 2 via Document) so
-    we catch every report — the legacy Path-1-only check missed ~33% of typed
-    reports. Marks items verified when ProcessStatus is in {3,4,7} or when a
-    report blob with substantive text already exists. Also refreshes
+    Two-pass check per item, in order of precedence:
+      1. By accession (Request.Record.InternalIdentifier) — finds the typed
+         report even when the typist abandoned our dictation and typed fresh
+         into a new Report.Instance under the same Request.Record.
+      2. By dictation TransactionKey (Path 1 + Path 2 dual join) — fallback
+         for orphan dictations that have no accession.
+
+    Marks items verified when ProcessStatus is in {3,4,7}. Also refreshes
     report_process_status / report_instance_key / priority on the local row.
     """
     if site.ris_type != "karisma":
         return 0
     try:
-        from crowdtrans.karisma import fetch_worklist_sync_state
+        from crowdtrans.karisma import (
+            fetch_worklist_sync_state,
+            fetch_worklist_sync_state_by_accession,
+        )
     except Exception:
         return 0
 
@@ -598,18 +605,35 @@ def _sync_ready_worklist(session, site: SiteConfig, batch_size: int = 2000) -> i
     )
     if not ready_items:
         return 0
-    keys = [int(t.source_dictation_id) for t in ready_items]
+
+    accessions = list({
+        t.internal_identifier for t in ready_items if t.internal_identifier
+    })
+    tk_orphans = [
+        int(t.source_dictation_id)
+        for t in ready_items
+        if not t.internal_identifier
+    ]
     try:
-        state = fetch_worklist_sync_state(site, keys)
+        by_acc = fetch_worklist_sync_state_by_accession(site, accessions)
     except Exception:
-        logger.exception("[%s] worklist sync: fetch_worklist_sync_state failed", site.site_id)
-        return 0
+        logger.exception("[%s] worklist sync: by-accession lookup failed", site.site_id)
+        by_acc = {}
+    try:
+        by_tk = fetch_worklist_sync_state(site, tk_orphans) if tk_orphans else {}
+    except Exception:
+        logger.exception("[%s] worklist sync: by-TK lookup failed", site.site_id)
+        by_tk = {}
 
     moved = 0
     refreshed = 0
     now = datetime.datetime.utcnow()
     for t in ready_items:
-        entry = state.get(int(t.source_dictation_id))
+        entry = None
+        if t.internal_identifier:
+            entry = by_acc.get(t.internal_identifier)
+        if entry is None:
+            entry = by_tk.get(int(t.source_dictation_id))
         if not entry:
             continue
         status = entry.get("process_status")
