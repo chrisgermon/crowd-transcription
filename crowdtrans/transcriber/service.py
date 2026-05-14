@@ -387,6 +387,7 @@ def _build_keyterms(txn: Transcription) -> list[str]:
         doctor_name=txn.doctor_family_name,
         referrer_name=txn.referrer_family_name,
         procedure_description=txn.procedure_description,
+        doctor_id=txn.doctor_id,
     )
 
 

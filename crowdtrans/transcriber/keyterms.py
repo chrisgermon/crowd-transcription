@@ -23,6 +23,39 @@ _KARISMA_DICT_PATHS = [
     Path("/opt/crowdtrans/data/karisma_dictionary.json"),
 ]
 
+_DOCTOR_PROFILES: dict | None = None
+_DOCTOR_PROFILES_MTIME: float | None = None
+_DOCTOR_PROFILES_PATHS = [
+    Path(__file__).resolve().parent.parent.parent / "data" / "doctor_profiles.json",
+    Path("/opt/crowdtrans/data/doctor_profiles.json"),
+]
+
+# Words too generic to boost — boosting these hurts more than helps because
+# Deepgram already gets them right and the keyterm slot is wasted.
+_DOCTOR_KEYTERM_STOPWORDS = {
+    "right", "left", "both", "the", "a", "an", "and", "or", "of", "to", "in",
+    "on", "at", "is", "no", "not", "with", "without", "for", "from", "by",
+    "this", "that", "there", "are", "was", "were", "has", "have", "had",
+    "?", "??", "???",
+}
+
+
+def _is_valid_keyterm(term: str) -> bool:
+    """Reject sentences/macros stored as 'replacements' — Deepgram keyterms expect words or short phrases."""
+    if not term:
+        return False
+    t = term.strip()
+    if len(t) < 3 or len(t) > 60:
+        return False
+    # Macro expansions tend to be sentences ending with terminal punctuation.
+    if t[-1] in ".!?":
+        return False
+    if t.count(",") > 0:
+        return False
+    if len(t.split()) > 4:
+        return False
+    return True
+
 
 def _load_karisma_dictionary() -> list[str]:
     """Load Karisma medical dictionary words (cached). Used as additional keyterm pool."""
@@ -66,6 +99,111 @@ def sync_karisma_dictionary():
     global _KARISMA_DICT
     _KARISMA_DICT = None
     return len(words)
+
+
+def _load_doctor_profiles() -> dict:
+    """Load doctor profile JSON (cached, auto-reloads when file mtime changes)."""
+    global _DOCTOR_PROFILES, _DOCTOR_PROFILES_MTIME
+    for path in _DOCTOR_PROFILES_PATHS:
+        if path.exists():
+            try:
+                mtime = path.stat().st_mtime
+                if _DOCTOR_PROFILES is not None and mtime == _DOCTOR_PROFILES_MTIME:
+                    return _DOCTOR_PROFILES
+                _DOCTOR_PROFILES = json.loads(path.read_text(encoding="utf-8"))
+                _DOCTOR_PROFILES_MTIME = mtime
+                return _DOCTOR_PROFILES
+            except Exception as e:
+                logger.warning("Failed to load doctor profiles from %s: %s", path, e)
+    if _DOCTOR_PROFILES is None:
+        _DOCTOR_PROFILES = {}
+    return _DOCTOR_PROFILES
+
+
+def _modality_to_profile_group(modality_code: str | None) -> str | None:
+    """Map fine-grained modality codes to the buckets used in doctor_profiles.json."""
+    if not modality_code:
+        return None
+    code = modality_code.upper()
+    # The learner groups everything as "RAD" today; future-proof with passthrough.
+    if code in {"CR", "DX", "XA", "RF"}:
+        return "RAD"
+    return code
+
+
+def _doctor_profile_keyterms(doctor_id: str | None, modality_code: str | None, limit: int = 25) -> list[str]:
+    """Top replacement words this doctor uses (i.e. words Deepgram has historically mis-heard for them)."""
+    if not doctor_id:
+        return []
+    profiles = _load_doctor_profiles()
+    profile = profiles.get(doctor_id) or profiles.get(doctor_id.upper())
+    if not profile:
+        return []
+    modalities = profile.get("modalities", {})
+
+    # Try the matched modality bucket first, then fall back to all modalities for this doctor.
+    candidate_corrections: list[tuple[str, int]] = []
+    group = _modality_to_profile_group(modality_code)
+    if group and group in modalities:
+        for entry in modalities[group].get("word_corrections", []):
+            if len(entry) >= 3:
+                candidate_corrections.append((entry[1], entry[2]))
+    else:
+        for mod_data in modalities.values():
+            for entry in mod_data.get("word_corrections", []):
+                if len(entry) >= 3:
+                    candidate_corrections.append((entry[1], entry[2]))
+
+    candidate_corrections.sort(key=lambda x: -x[1])
+    out: list[str] = []
+    seen: set[str] = set()
+    for word, _count in candidate_corrections:
+        w = (word or "").strip()
+        wl = w.lower()
+        if wl in _DOCTOR_KEYTERM_STOPWORDS or wl in seen:
+            continue
+        if not _is_valid_keyterm(w):
+            continue
+        seen.add(wl)
+        out.append(w)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _doctor_db_keyterms(doctor_id: str | None, limit: int = 15) -> list[str]:
+    """Replacement targets from per-doctor word_replacements DB rows."""
+    if not doctor_id:
+        return []
+    try:
+        from crowdtrans.database import SessionLocal
+        from crowdtrans.models import WordReplacement
+    except Exception:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        with SessionLocal() as session:
+            rows = (
+                session.query(WordReplacement.replacement)
+                .filter(WordReplacement.doctor_id == doctor_id)
+                .filter(WordReplacement.enabled.is_(True))
+                .all()
+            )
+            for (repl,) in rows:
+                r = (repl or "").strip()
+                rl = r.lower()
+                if rl in _DOCTOR_KEYTERM_STOPWORDS or rl in seen:
+                    continue
+                if not _is_valid_keyterm(r):
+                    continue
+                seen.add(rl)
+                out.append(r)
+                if len(out) >= limit:
+                    break
+    except Exception as e:
+        logger.warning("Failed to load doctor word_replacements for %s: %s", doctor_id, e)
+    return out
 
 
 def _load_custom_keyterms() -> list[str]:
@@ -226,9 +364,20 @@ def get_keyterms(
     doctor_name: str | None = None,
     referrer_name: str | None = None,
     procedure_description: str | None = None,
+    doctor_id: str | None = None,
 ) -> list[str]:
-    """Build a keyterm list for a specific study, capped at 100."""
+    """Build a keyterm list for a specific study, capped at 100.
+
+    Per-doctor terms (from learned profile + word_replacements) are inserted
+    after modality-specific terms so they survive the 100-term cap.
+    """
     terms = list(BASE_TERMS)
+
+    # Per-doctor terms come BEFORE the modality block so they survive the 100-term cap.
+    # These are words historically mis-heard by Deepgram for this specific doctor —
+    # the highest-signal boost we have, second only to the always-on BASE_TERMS.
+    terms.extend(_doctor_db_keyterms(doctor_id))
+    terms.extend(_doctor_profile_keyterms(doctor_id, modality_code))
 
     # Add modality-specific terms
     if modality_code and modality_code in MODALITY_TERMS:
