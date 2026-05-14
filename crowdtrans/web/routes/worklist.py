@@ -49,6 +49,7 @@ def worklist_list(
     date_to: str = Query("", description="Filter to date"),
     location: Optional[list[str]] = Query(None, description="Filter by facility names"),
     urgent: str = Query("", description="If '1', restrict to urgent priorities"),
+    include_orphans: str = Query("", description="If '1', include dictations with no accession"),
     sort: str = Query("", description="Sort column"),
     sort_dir: str = Query("", description="Sort direction: asc or desc"),
     page: int = Query(1, ge=1),
@@ -95,6 +96,10 @@ def worklist_list(
             base = base.filter(Transcription.facility_name.in_(location))
         if urgent == "1":
             base = base.filter(Transcription.priority_name.in_(URGENT_PRIORITY_NAMES))
+        # Orphans = dictations with no accession (no Karisma Request.Record link).
+        # Hidden by default — typists can't action them.
+        if include_orphans != "1":
+            base = base.filter(Transcription.internal_identifier.isnot(None))
 
         total = base.count()
         total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -118,7 +123,7 @@ def worklist_list(
 
         items = base.order_by(*order).offset(offset).limit(PAGE_SIZE).all()
 
-        # Status counts for the badges
+        # Status counts for the badges — match the orphan-filter visibility
         count_q = (
             session.query(Transcription.worklist_status, func.count())
             .filter(
@@ -127,6 +132,8 @@ def worklist_list(
             )
             .group_by(Transcription.worklist_status)
         )
+        if include_orphans != "1":
+            count_q = count_q.filter(Transcription.internal_identifier.isnot(None))
         status_counts = dict(count_q.all())
 
         # Urgent count among ready items (drives the "Urgent" pill)
@@ -137,6 +144,19 @@ def worklist_list(
                 Transcription.formatted_text.isnot(None),
                 Transcription.worklist_status == "ready",
                 Transcription.priority_name.in_(URGENT_PRIORITY_NAMES),
+            )
+            .scalar()
+            or 0
+        )
+
+        # Count of orphan ready items (so we can render "X hidden orphans")
+        orphan_ready_count = (
+            session.query(func.count(Transcription.id))
+            .filter(
+                Transcription.status == "complete",
+                Transcription.formatted_text.isnot(None),
+                Transcription.worklist_status == "ready",
+                Transcription.internal_identifier.is_(None),
             )
             .scalar()
             or 0
@@ -186,6 +206,8 @@ def worklist_list(
         "location": location or [],
         "urgent": urgent,
         "urgent_count": urgent_count,
+        "include_orphans": include_orphans,
+        "orphan_ready_count": orphan_ready_count,
         "sort": sort,
         "sort_dir": sort_dir,
         "modalities": modalities,
