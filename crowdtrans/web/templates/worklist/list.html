@@ -7,7 +7,7 @@
 {% for loc in location %}{% set loc_qs.val = loc_qs.val + '&location=' + loc %}{% endfor %}
 
 {# Base query string for sort links (preserves all filters) #}
-{% set filter_qs = 'wl_status=' + wl_status + '&modality=' + modality + '&doctor=' + doctor + '&date_from=' + date_from + '&date_to=' + date_to + loc_qs.val %}
+{% set filter_qs = 'wl_status=' + wl_status + '&modality=' + modality + '&doctor=' + doctor + '&date_from=' + date_from + '&date_to=' + date_to + loc_qs.val + ('&urgent=1' if urgent == '1' else '') %}
 
 {# Sort arrow macro #}
 {% macro sort_header(col, label) %}
@@ -35,6 +35,10 @@
     </div>
     <div class="flex items-center space-x-4">
         <div class="text-center">
+            <div class="text-2xl font-bold text-red-600">{{ urgent_count }}</div>
+            <div class="text-xs text-gray-500">urgent</div>
+        </div>
+        <div class="text-center">
             <div class="text-2xl font-bold text-blue-600">{{ status_counts.get('ready', 0) }}</div>
             <div class="text-xs text-gray-500">ready</div>
         </div>
@@ -53,7 +57,7 @@
 <div class="flex items-center space-x-1 mb-4">
     {% set tabs = [('ready', 'Ready'), ('copied', 'Copied'), ('verified', 'Verified'), ('all', 'All')] %}
     {% for val, label in tabs %}
-    <a href="?wl_status={{ val }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}{{ loc_qs.val }}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+    <a href="?wl_status={{ val }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}{{ loc_qs.val }}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
        class="px-4 py-2 text-sm font-medium rounded-md {% if wl_status == val %}bg-indigo-600 text-white{% else %}bg-white text-gray-700 border border-gray-300 hover:bg-gray-50{% endif %}">
         {{ label }}
         {% if val != 'all' and status_counts.get(val, 0) > 0 %}
@@ -61,6 +65,16 @@
         {% endif %}
     </a>
     {% endfor %}
+    <span class="mx-2 text-gray-300">|</span>
+    {# Urgent toggle — preserves other filters #}
+    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}{{ loc_qs.val }}{% if urgent != '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+       class="px-4 py-2 text-sm font-medium rounded-md inline-flex items-center {% if urgent == '1' %}bg-red-600 text-white{% else %}bg-white text-red-700 border border-red-300 hover:bg-red-50{% endif %}">
+        <svg class="w-3.5 h-3.5 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+        Urgent
+        {% if urgent_count > 0 %}
+        <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs {% if urgent == '1' %}bg-red-500 text-white{% else %}bg-red-100 text-red-700{% endif %}">{{ urgent_count }}</span>
+        {% endif %}
+    </a>
 </div>
 
 <!-- Patient search typeahead -->
@@ -82,15 +96,15 @@
 <!-- Quick date filters -->
 <div class="flex items-center space-x-2 mb-3">
     <span class="text-xs text-gray-500 font-medium">Quick:</span>
-    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ today }}&date_to={{ today }}{{ loc_qs.val }}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ today }}&date_to={{ today }}{{ loc_qs.val }}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
        class="px-2.5 py-1 text-xs rounded-md {% if date_from == today and date_to == today %}bg-indigo-600 text-white{% else %}bg-white text-gray-600 border border-gray-300 hover:bg-gray-50{% endif %}">Today</a>
-    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ yesterday }}&date_to={{ yesterday }}{{ loc_qs.val }}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ yesterday }}&date_to={{ yesterday }}{{ loc_qs.val }}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
        class="px-2.5 py-1 text-xs rounded-md {% if date_from == yesterday and date_to == yesterday %}bg-indigo-600 text-white{% else %}bg-white text-gray-600 border border-gray-300 hover:bg-gray-50{% endif %}">Yesterday</a>
-    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ week_start }}&date_to={{ today }}{{ loc_qs.val }}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ week_start }}&date_to={{ today }}{{ loc_qs.val }}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
        class="px-2.5 py-1 text-xs rounded-md {% if date_from == week_start and date_to == today %}bg-indigo-600 text-white{% else %}bg-white text-gray-600 border border-gray-300 hover:bg-gray-50{% endif %}">This Week</a>
-    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ month_start }}&date_to={{ today }}{{ loc_qs.val }}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ month_start }}&date_to={{ today }}{{ loc_qs.val }}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
        class="px-2.5 py-1 text-xs rounded-md {% if date_from == month_start and date_to == today %}bg-indigo-600 text-white{% else %}bg-white text-gray-600 border border-gray-300 hover:bg-gray-50{% endif %}">This Month</a>
-    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}{{ loc_qs.val }}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+    <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}{{ loc_qs.val }}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
        class="px-2.5 py-1 text-xs rounded-md {% if not date_from and not date_to %}bg-indigo-600 text-white{% else %}bg-white text-gray-600 border border-gray-300 hover:bg-gray-50{% endif %}">All Time</a>
 </div>
 
@@ -99,6 +113,7 @@
     <input type="hidden" name="wl_status" value="{{ wl_status }}">
     <input type="hidden" name="sort" value="{{ sort }}">
     <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+    {% if urgent == '1' %}<input type="hidden" name="urgent" value="1">{% endif %}
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
         <div>
             <select name="modality" class="w-full rounded-md border-gray-300 shadow-sm text-sm px-3 py-2 border focus:ring-indigo-500 focus:border-indigo-500">
@@ -162,7 +177,7 @@
         {% for loc in location %}
         <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
             {{ loc }}
-            <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}{% for l in location %}{% if l != loc %}&location={{ l }}{% endif %}{% endfor %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
+            <a href="?wl_status={{ wl_status }}&modality={{ modality }}&doctor={{ doctor }}&date_from={{ date_from }}&date_to={{ date_to }}{% for l in location %}{% if l != loc %}&location={{ l }}{% endif %}{% endfor %}{% if urgent == '1' %}&urgent=1{% endif %}&sort={{ sort }}&sort_dir={{ sort_dir }}"
                class="ml-1 text-indigo-400 hover:text-indigo-600">&times;</a>
         </span>
         {% endfor %}
@@ -176,6 +191,9 @@
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider group w-24">
+                        {{ sort_header('priority', 'Priority') }}
+                    </th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider group">
                         {{ sort_header('patient', 'Patient') }}
                     </th>
@@ -208,8 +226,30 @@
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
+                {% set urgent_names = ['Immediate', 'ASAP', 'Same_Day', 'Priority_Typing', '48_Hour_Limit'] %}
                 {% for txn in items %}
-                <tr class="hover:bg-gray-50 cursor-pointer transition-colors" onclick="window.location='/worklist/{{ txn.id }}'">
+                {% set pname = txn.priority_name or '' %}
+                {% set pdisp = pname.replace('_', ' ') if pname else '' %}
+                <tr class="hover:bg-gray-50 cursor-pointer transition-colors {% if pname in urgent_names %}bg-red-50/40{% endif %}" onclick="window.location='/worklist/{{ txn.id }}'">
+                    <td class="px-3 py-3 whitespace-nowrap">
+                        {% if pname == 'Immediate' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-red-600 text-white">{{ pdisp }}</span>
+                        {% elif pname == 'ASAP' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-800">{{ pdisp }}</span>
+                        {% elif pname == 'Same_Day' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-800">{{ pdisp }}</span>
+                        {% elif pname == 'Priority_Typing' or pname == '48_Hour_Limit' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800">{{ pdisp }}</span>
+                        {% elif pname == 'Routine' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">Routine</span>
+                        {% elif pname == 'Low' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-500">Low</span>
+                        {% elif pname %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{{ pdisp }}</span>
+                        {% else %}
+                        <span class="text-xs text-gray-300">—</span>
+                        {% endif %}
+                    </td>
                     <td class="px-4 py-3 whitespace-nowrap">
                         <a href="/worklist/{{ txn.id }}" class="font-medium text-indigo-600 hover:text-indigo-900">
                             {{ txn.patient_family_name or '' }}{% if txn.patient_given_names %}, {{ txn.patient_given_names }}{% endif %}
@@ -265,7 +305,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="10" class="px-4 py-12 text-center text-gray-400">
+                    <td colspan="11" class="px-4 py-12 text-center text-gray-400">
                         {% if wl_status == 'ready' %}
                         No transcriptions waiting to be copied. All caught up!
                         {% elif wl_status == 'copied' %}
@@ -418,7 +458,7 @@ function markReady(id, btn) {
             if (saved) {
                 var filters = JSON.parse(saved);
                 // Only restore if there are meaningful filters beyond defaults
-                var hasFilters = filters.modality || filters.doctor || (filters.location && filters.location.length);
+                var hasFilters = filters.modality || filters.doctor || (filters.location && filters.location.length) || filters.urgent === '1';
                 if (hasFilters) {
                     var qs = new URLSearchParams();
                     qs.set('wl_status', filters.wl_status || 'ready');
@@ -426,6 +466,7 @@ function markReady(id, btn) {
                     if (filters.doctor) qs.set('doctor', filters.doctor);
                     if (filters.date_from) qs.set('date_from', filters.date_from);
                     if (filters.date_to) qs.set('date_to', filters.date_to);
+                    if (filters.urgent === '1') qs.set('urgent', '1');
                     if (filters.sort) qs.set('sort', filters.sort);
                     if (filters.sort_dir) qs.set('sort_dir', filters.sort_dir);
                     if (filters.location) {
@@ -446,6 +487,7 @@ function markReady(id, btn) {
             doctor: params.get('doctor') || '',
             date_from: params.get('date_from') || '',
             date_to: params.get('date_to') || '',
+            urgent: params.get('urgent') || '',
             sort: params.get('sort') || '',
             sort_dir: params.get('sort_dir') || '',
             location: params.getAll('location'),

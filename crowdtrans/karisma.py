@@ -53,7 +53,10 @@ SELECT TOP {limit}
 
     COALESCE(RI.[Key], RI2.[Key]) AS ReportInstanceKey,
     COALESCE(RI.ClinicalAvailability, RI2.ClinicalAvailability) AS ClinicalAvailability,
-    COALESCE(RI.ProcessStatus, RI2.ProcessStatus) AS ReportProcessStatus
+    COALESCE(RI.ProcessStatus, RI2.ProcessStatus) AS ReportProcessStatus,
+
+    PT.[Name] AS PriorityName,
+    PT.[Rank] AS PriorityRank
 
 FROM [Version].[Karisma.Dictation.Instance] DI
 
@@ -120,6 +123,9 @@ LEFT JOIN [Version].[Karisma.Practitioner.Assignment] PA
     ON RR.RequestingPractitionerAssignmentKey = PA.[Key]
 LEFT JOIN [Version].[Karisma.Practitioner.Record] REFPRAC
     ON PA.PractitionerRecordKey = REFPRAC.[Key]
+
+LEFT JOIN [Version].[Karisma.Request.PriorityType] PT
+    ON PT.[Key] = RR.ReportCompletionPriorityTypeKey
 
 WHERE DI.TransactionKey > %d
   AND DI.Key_Deleted = 0
@@ -229,6 +235,89 @@ def _parse_report_xml(xml_bytes: bytes) -> str:
     result = "\n".join(paragraphs)
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
+
+
+WORKLIST_SYNC_QUERY = """\
+SELECT
+    DI.TransactionKey AS DictationTK,
+    COALESCE(RI.[Key], RI2.[Key]) AS ReportInstanceKey,
+    COALESCE(RI.ProcessStatus, RI2.ProcessStatus) AS ProcessStatus,
+    COALESCE(PT.[Name], PT2.[Name]) AS PriorityName,
+    COALESCE(PT.[Rank], PT2.[Rank]) AS PriorityRank
+FROM [Version].[Karisma.Dictation.Instance] DI
+
+-- Path 1: Dictation -> ReportInstanceChange -> Report.Instance
+LEFT JOIN [Version].[Karisma.Dictation.Instance-ReportInstanceChange] DIRIC
+    ON DIRIC.ParentKey = DI.[Key] AND DIRIC.DeletedTransactionKey IS NULL
+LEFT JOIN [Version].[Karisma.Report.InstanceChange] RIC
+    ON RIC.[Key] = DIRIC.ChildKey
+LEFT JOIN [Version].[Karisma.Report.Instance] RI
+    ON RI.[Key] = RIC.ReportInstanceKey AND RI.IsDiscarded = 0
+
+-- Path 2: Dictation -> Document -> Report.Instance (catches reports Path 1 misses)
+LEFT JOIN [Version].[Karisma.Dictation.Instance-Document] DID
+    ON DID.ParentKey = DI.[Key] AND DID.DeletedTransactionKey IS NULL
+LEFT JOIN [Version].[Karisma.Report.Instance] RI2
+    ON RI2.DocumentKey = DID.ChildKey AND RI2.IsDiscarded = 0
+    AND RI.[Key] IS NULL
+
+-- Priority from Request.Record via either report path
+LEFT JOIN [Version].[Karisma.Request.Record] RR
+    ON RR.[Key] = RI.RequestRecordKey
+LEFT JOIN [Version].[Karisma.Request.PriorityType] PT
+    ON PT.[Key] = RR.ReportCompletionPriorityTypeKey
+LEFT JOIN [Version].[Karisma.Request.Record] RR2
+    ON RR2.[Key] = RI2.RequestRecordKey
+LEFT JOIN [Version].[Karisma.Request.PriorityType] PT2
+    ON PT2.[Key] = RR2.ReportCompletionPriorityTypeKey
+
+WHERE DI.TransactionKey IN ({placeholders})
+"""
+
+
+def fetch_worklist_sync_state(
+    site: SiteConfig, transaction_keys: list[int]
+) -> dict[int, dict[str, Any]]:
+    """For each dictation TransactionKey, return current Karisma report state.
+
+    Uses both Path 1 (InstanceChange) and Path 2 (Document) so it catches the
+    reports Path-1-only checks miss. ProcessStatus 3/4/7 means a typed report
+    exists in Karisma (empirically verified). Returns
+    {transaction_key: {process_status, report_instance_key, priority_name,
+    priority_rank}}. Missing keys = no report instance yet. Report text is not
+    fetched here — call fetch_reports() separately if you need it (expensive).
+    """
+    if not transaction_keys:
+        return {}
+    conn = _get_connection(site)
+    out: dict[int, dict[str, Any]] = {}
+    try:
+        batch_size = 500
+        for i in range(0, len(transaction_keys), batch_size):
+            batch = transaction_keys[i:i + batch_size]
+            placeholders = ",".join(["%d"] * len(batch))
+            query = WORKLIST_SYNC_QUERY.format(placeholders=placeholders)
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(batch))
+                for row in cur:
+                    tk = row["DictationTK"]
+                    new_entry = {
+                        "report_instance_key": row["ReportInstanceKey"],
+                        "process_status": row.get("ProcessStatus"),
+                        "priority_name": row.get("PriorityName"),
+                        "priority_rank": row.get("PriorityRank"),
+                    }
+                    existing = out.get(tk)
+                    # When the same TK appears multiple times (e.g. amendment
+                    # chain), pick the row with the highest ProcessStatus.
+                    if existing is None or (
+                        (new_entry["process_status"] or 0)
+                        > (existing["process_status"] or 0)
+                    ):
+                        out[tk] = new_entry
+        return out
+    finally:
+        conn.close()
 
 
 def fetch_reports(site: SiteConfig, transaction_keys: list[int]) -> dict[int, str]:

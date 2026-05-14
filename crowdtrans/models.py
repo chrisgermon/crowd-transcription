@@ -162,6 +162,10 @@ class Transcription(Base):
     verified_by = Column(String, nullable=True)
     final_text = Column(Text, nullable=True)  # frozen formatted_text + signature at verify time
 
+    # Priority (from Karisma Request.PriorityType — ReportCompletion)
+    priority_name = Column(String, nullable=True)
+    priority_rank = Column(Integer, nullable=True)  # 1=most urgent (Immediate), 2=ASAP, 3=Same_Day, 4+=Routine/Low
+
     # Timestamps
     dictation_date = Column(DateTime, nullable=True)
     discovered_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -179,6 +183,7 @@ class Transcription(Base):
         Index("ix_dictation_date", "dictation_date"),
         Index("ix_site_source", "site_id", "source_dictation_id"),
         Index("ix_worklist_status", "worklist_status"),
+        Index("ix_priority_rank", "priority_rank"),
     )
 
 

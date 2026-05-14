@@ -56,6 +56,8 @@ def _migrate_add_columns(engine_):
             ("verified_at", "DATETIME"),
             ("verified_by", "TEXT"),
             ("final_text", "TEXT"),
+            ("priority_name", "TEXT"),
+            ("priority_rank", "INTEGER"),
         ],
     }
 

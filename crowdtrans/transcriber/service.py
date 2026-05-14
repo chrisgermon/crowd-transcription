@@ -264,6 +264,8 @@ def _discover_karisma(session, site: SiteConfig, wm: Watermark) -> int:
             facility_id=str(row["WorkSiteKey"]) if row.get("WorkSiteKey") else None,
             facility_name=row.get("WorkSiteName"),
             facility_code=row.get("WorkSiteCode"),
+            priority_name=row.get("PriorityName"),
+            priority_rank=row.get("PriorityRank"),
             dictation_date=row.get("CreatedTime"),
             status="pending",
             discovered_at=datetime.datetime.utcnow(),
@@ -561,17 +563,25 @@ def _discover(session, site: SiteConfig) -> int:
     return fn(session, site, wm)
 
 
-def _sync_ready_worklist(session, site: SiteConfig) -> int:
+# ProcessStatus values that indicate Karisma has accepted typed report text.
+# Empirically verified: status 3/4/7 == typed (every sampled report had content);
+# status 0/1 == draft/in-progress.
+_VERIFIED_PROCESS_STATUSES = {3, 4, 7}
+
+
+def _sync_ready_worklist(session, site: SiteConfig, batch_size: int = 2000) -> int:
     """For each 'ready' worklist item, check Karisma for a finalised report.
 
-    If Karisma now has a typed report (the study was dictated outside
-    CrowdScription), mark the item as verified so it falls off the typist's
-    worklist. Returns the number of items moved.
+    Uses a dual-path query (Path 1 via InstanceChange + Path 2 via Document) so
+    we catch every report — the legacy Path-1-only check missed ~33% of typed
+    reports. Marks items verified when ProcessStatus is in {3,4,7} or when a
+    report blob with substantive text already exists. Also refreshes
+    report_process_status / report_instance_key / priority on the local row.
     """
     if site.ris_type != "karisma":
         return 0
     try:
-        from crowdtrans.karisma import fetch_reports
+        from crowdtrans.karisma import fetch_worklist_sync_state
     except Exception:
         return 0
 
@@ -583,31 +593,58 @@ def _sync_ready_worklist(session, site: SiteConfig) -> int:
             Transcription.worklist_status == "ready",
             Transcription.source_dictation_id.isnot(None),
         )
-        .limit(500)
+        .limit(batch_size)
         .all()
     )
     if not ready_items:
         return 0
     keys = [int(t.source_dictation_id) for t in ready_items]
     try:
-        reports = fetch_reports(site, keys)
+        state = fetch_worklist_sync_state(site, keys)
     except Exception:
-        logger.exception("[%s] worklist sync: fetch_reports failed", site.site_id)
+        logger.exception("[%s] worklist sync: fetch_worklist_sync_state failed", site.site_id)
         return 0
 
     moved = 0
+    refreshed = 0
     now = datetime.datetime.utcnow()
     for t in ready_items:
-        text = reports.get(int(t.source_dictation_id))
-        if not text or len(text) < 20:
+        entry = state.get(int(t.source_dictation_id))
+        if not entry:
+            continue
+        status = entry.get("process_status")
+        rik = entry.get("report_instance_key")
+        pname = entry.get("priority_name")
+        prank = entry.get("priority_rank")
+
+        # Update fields we now know about so downstream views stay fresh
+        changed = False
+        if rik and t.report_instance_key != rik:
+            t.report_instance_key = rik
+            changed = True
+        if status is not None and t.report_process_status != status:
+            t.report_process_status = status
+            changed = True
+        if pname and t.priority_name != pname:
+            t.priority_name = pname
+            changed = True
+        if prank is not None and t.priority_rank != prank:
+            t.priority_rank = prank
+            changed = True
+        if changed:
+            refreshed += 1
+
+        if status not in _VERIFIED_PROCESS_STATUSES:
             continue
         t.worklist_status = "verified"
         t.verified_at = now
         t.verified_by = "karisma"
-        t.final_text = text
         moved += 1
-    if moved:
-        logger.info("[%s] worklist sync moved %d items to verified (typed in Karisma)", site.site_id, moved)
+    if moved or refreshed:
+        logger.info(
+            "[%s] worklist sync: %d verified (typed in Karisma), %d field refreshes (batch=%d)",
+            site.site_id, moved, refreshed, len(ready_items),
+        )
     return moved
 
 

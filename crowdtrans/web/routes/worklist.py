@@ -29,6 +29,13 @@ _SORT_COLUMNS = {
     "date": Transcription.dictation_date,
     "processed": Transcription.transcription_completed_at,
     "location": Transcription.facility_name,
+    "priority": Transcription.priority_rank,
+}
+
+# Karisma priority names that should appear on an "urgent" filter view.
+# Rank 1=Immediate, 2=ASAP, 3=Same_Day. Plus explicit named buckets.
+URGENT_PRIORITY_NAMES = {
+    "Immediate", "ASAP", "Same_Day", "Priority_Typing", "48_Hour_Limit",
 }
 
 
@@ -41,6 +48,7 @@ def worklist_list(
     date_from: str = Query("", description="Filter from date"),
     date_to: str = Query("", description="Filter to date"),
     location: Optional[list[str]] = Query(None, description="Filter by facility names"),
+    urgent: str = Query("", description="If '1', restrict to urgent priorities"),
     sort: str = Query("", description="Sort column"),
     sort_dir: str = Query("", description="Sort direction: asc or desc"),
     page: int = Query(1, ge=1),
@@ -85,6 +93,8 @@ def worklist_list(
             base = base.filter(Transcription.dictation_date <= date_to + " 23:59:59")
         if location:
             base = base.filter(Transcription.facility_name.in_(location))
+        if urgent == "1":
+            base = base.filter(Transcription.priority_name.in_(URGENT_PRIORITY_NAMES))
 
         total = base.count()
         total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -94,15 +104,19 @@ def worklist_list(
         sort_col = _SORT_COLUMNS.get(sort)
         if sort_col is not None:
             if sort_dir == "desc":
-                order = sort_col.desc().nullslast()
+                order = (sort_col.desc().nullslast(),)
             else:
-                order = sort_col.asc().nullslast()
+                order = (sort_col.asc().nullslast(),)
         elif wl_status == "ready":
-            order = Transcription.dictation_date.asc().nullslast()
+            # Default ready ordering: most urgent first, then oldest dictation first
+            order = (
+                Transcription.priority_rank.asc().nullslast(),
+                Transcription.dictation_date.asc().nullslast(),
+            )
         else:
-            order = Transcription.dictation_date.desc().nullslast()
+            order = (Transcription.dictation_date.desc().nullslast(),)
 
-        items = base.order_by(order).offset(offset).limit(PAGE_SIZE).all()
+        items = base.order_by(*order).offset(offset).limit(PAGE_SIZE).all()
 
         # Status counts for the badges
         count_q = (
@@ -114,6 +128,19 @@ def worklist_list(
             .group_by(Transcription.worklist_status)
         )
         status_counts = dict(count_q.all())
+
+        # Urgent count among ready items (drives the "Urgent" pill)
+        urgent_count = (
+            session.query(func.count(Transcription.id))
+            .filter(
+                Transcription.status == "complete",
+                Transcription.formatted_text.isnot(None),
+                Transcription.worklist_status == "ready",
+                Transcription.priority_name.in_(URGENT_PRIORITY_NAMES),
+            )
+            .scalar()
+            or 0
+        )
 
         # Filter dropdowns
         modalities = [
@@ -157,6 +184,8 @@ def worklist_list(
         "date_from": date_from,
         "date_to": date_to,
         "location": location or [],
+        "urgent": urgent,
+        "urgent_count": urgent_count,
         "sort": sort,
         "sort_dir": sort_dir,
         "modalities": modalities,
