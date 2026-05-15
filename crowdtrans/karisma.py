@@ -963,14 +963,13 @@ ORDER BY RA.TransactionKey DESC
 """
 
 WORKSHEET_ATTACHMENTS_QUERY = """\
-SELECT RIA.Name, E.Buffer, E.[Format], E.[Length]
+SELECT RIA.Name, E.Buffer, E.[Format], E.[Length], E.[Handle]
 FROM [Version].[Karisma.Report.InstanceAttachment] RIA
 JOIN [Version].[Karisma.Report.InstanceChange] RIC ON RIC.[Key] = RIA.ReportInstanceChangeKey
 JOIN [System].[Extent] E ON E.[Key] = RIA.BlobKey
 WHERE RIC.ReportInstanceKey = %d
   AND RIA.Key_Deleted = 0
   AND RIA.[Current] = 1
-  AND E.Buffer IS NOT NULL
 ORDER BY RIA.TransactionKey DESC
 """
 
@@ -984,9 +983,12 @@ def _fetch_external_extent(handle: bytes) -> bytes | None:
     bytes if found.
 
     Configure via env: KARISMA_EXTENT_ROOTS = colon-separated absolute
-    paths to search. The file is expected to be named after the GUID
-    (with or without dashes, with or without the original format extension).
-    Returns None when not found.
+    paths to search. Two layouts are probed in each root:
+      - flat: ``<root>/<guid>.<ext>``
+      - Kestral nested: ``<root>/<AA>/<BB>/<guid>.<ext>`` (first 4 hex chars
+        of the GUID split into two two-char dirs)
+    GUID byte-orderings (LE/BE), case (lower/upper), and dash-stripping are
+    all tried. Returns None when not found.
     """
     import os
     import uuid as _uuid
@@ -1001,10 +1003,14 @@ def _fetch_external_extent(handle: bytes) -> bytes | None:
     except Exception:
         return None
 
-    candidates = {
-        str(guid_le), str(guid_le).replace("-", ""), str(guid_le).upper(),
-        str(guid_be), str(guid_be).replace("-", ""), str(guid_be).upper(),
-    }
+    # Build name candidates, capturing the leading hex for nested layouts
+    raw = []
+    for g in (guid_le, guid_be):
+        s = str(g)
+        raw.extend([s, s.replace("-", ""), s.upper(), s.replace("-", "").upper()])
+    candidates = list({c for c in raw})
+    suffixes = ("", ".pdf", ".jpeg", ".jpg", ".png", ".bin", ".tif", ".tiff")
+
     for root in roots_env.split(":"):
         root = root.strip()
         if not root:
@@ -1013,13 +1019,18 @@ def _fetch_external_extent(handle: bytes) -> bytes | None:
         if not rp.exists():
             continue
         for cand in candidates:
-            for suffix in ("", ".pdf", ".jpeg", ".jpg", ".png", ".bin"):
-                p = rp / f"{cand}{suffix}"
-                if p.is_file():
-                    try:
-                        return p.read_bytes()
-                    except OSError:
-                        pass
+            # First 4 hex chars (strip dashes) → AA/BB nested folders
+            hex_only = cand.replace("-", "")
+            aa, bb = hex_only[:2], hex_only[2:4]
+            for prefix in (rp, rp / aa / bb, rp / aa.upper() / bb.upper(),
+                           rp / aa.lower() / bb.lower()):
+                for suffix in suffixes:
+                    p = prefix / f"{cand}{suffix}"
+                    if p.is_file():
+                        try:
+                            return p.read_bytes()
+                        except OSError:
+                            pass
     return None
 
 
@@ -1066,7 +1077,12 @@ def fetch_referral_attachments(site: SiteConfig, request_key: int) -> list[dict[
 
 
 def fetch_worksheet_attachments(site: SiteConfig, report_instance_key: int) -> list[dict[str, Any]]:
-    """Fetch worksheet/SonoReview image attachments for a report instance."""
+    """Fetch worksheet/SonoReview image attachments for a report instance.
+
+    Mirrors fetch_referral_attachments: inline (Buffer) is used directly;
+    external (Handle) is resolved via KARISMA_EXTENT_ROOTS, and falls back
+    to ``external=True, data=b""`` when the SILO share is unavailable.
+    """
     if not report_instance_key:
         return []
     conn = _get_connection(site)
@@ -1075,12 +1091,27 @@ def fetch_worksheet_attachments(site: SiteConfig, report_instance_key: int) -> l
             cur.execute(WORKSHEET_ATTACHMENTS_QUERY, (report_instance_key,))
             results = []
             for row in cur:
-                name, buf, fmt, length = row
+                name, buf, fmt, length, handle = row
+                if buf:
+                    data = bytes(buf)
+                    external = False
+                elif handle:
+                    fetched = _fetch_external_extent(bytes(handle))
+                    if fetched:
+                        data = fetched
+                        external = False
+                    else:
+                        data = b""
+                        external = True
+                else:
+                    data = b""
+                    external = False
                 results.append({
                     "name": name or "worksheet",
-                    "data": bytes(buf) if buf else b"",
+                    "data": data,
                     "format": (fmt or "").lstrip(".") or "png",
                     "length": length or 0,
+                    "external": external,
                 })
             return results
     finally:

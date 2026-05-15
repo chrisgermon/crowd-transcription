@@ -1147,30 +1147,45 @@
                     return;
                 }
 
+                function fmtSize(n) {
+                    if (!n) return '';
+                    if (n > 1024 * 1024) return (n / (1024*1024)).toFixed(1) + ' MB';
+                    if (n > 1024) return Math.round(n / 1024) + ' KB';
+                    return n + ' B';
+                }
+                function renderExternal(att) {
+                    return '<div class="mb-2 p-2 bg-amber-50 border border-amber-200 rounded">'
+                        + '<p class="text-xs font-medium text-amber-800">'
+                        + escapeHTML(att.name || 'attachment')
+                        + (att.length ? ' <span class="text-amber-600 font-normal">(' + fmtSize(att.length) + ')</span>' : '')
+                        + '</p>'
+                        + '<p class="text-xs text-amber-700">Stored on the Karisma SILO — open in Karisma to view.</p>'
+                        + '</div>';
+                }
+                function renderInline(att, defaultFmt) {
+                    var fmt = (att.format || defaultFmt || '').toLowerCase();
+                    if (fmt === 'pdf') {
+                        return '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">'
+                            + escapeHTML(att.name) + '</p>'
+                            + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded" style="height:400px;"></iframe></div>';
+                    }
+                    return '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
+                        + '<img src="data:image/' + (fmt || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer" onclick="window.open(this.src)" title="Click to open full size" /></div>';
+                }
+
                 var html = '';
 
                 if (data.referrals && data.referrals.length > 0) {
-                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1">Referral Documents</h4>';
-                    data.referrals.forEach(function(att, idx) {
-                        if (att.external) {
-                            html += '<div class="mb-2 p-2 bg-amber-50 border border-amber-200 rounded">'
-                                + '<p class="text-xs font-medium text-amber-800">' + escapeHTML(att.name) + ' <span class="text-amber-600">(external)</span></p>'
-                                + '<p class="text-xs text-amber-700">This document is stored on the Karisma extent server, not in the database. CrowdScription can\'t retrieve it directly yet — view in Karisma to open.</p>'
-                                + '</div>';
-                        } else if (att.format === 'pdf') {
-                            html += '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
-                                + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded" style="height:400px;"></iframe></div>';
-                        } else {
-                            html += '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
-                                + '<img src="data:image/' + att.format + ';base64,' + att.data + '" class="w-full border rounded" /></div>';
-                        }
+                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1">Referral Documents <span class="text-gray-400 font-normal">(' + data.referrals.length + ')</span></h4>';
+                    data.referrals.forEach(function(att) {
+                        html += att.external ? renderExternal(att) : renderInline(att, 'pdf');
                     });
                 }
 
                 if (data.worksheets && data.worksheets.length > 0) {
-                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1 mt-3">Worksheets</h4>';
-                    data.worksheets.forEach(function(att, idx) {
-                        html += '<div class="mb-2"><img src="data:image/' + (att.format || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer" onclick="window.open(this.src)" title="Click to open full size" /></div>';
+                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1 mt-3">Worksheets <span class="text-gray-400 font-normal">(' + data.worksheets.length + ')</span></h4>';
+                    data.worksheets.forEach(function(att) {
+                        html += att.external ? renderExternal(att) : renderInline(att, 'png');
                     });
                 }
 

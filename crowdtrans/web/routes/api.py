@@ -1182,25 +1182,25 @@ def get_attachments(transcription_id: int):
 
         from crowdtrans.karisma import fetch_referral_attachments, fetch_worksheet_attachments
 
+        def _serialise(att: dict) -> dict:
+            return {
+                "name": att.get("name") or "",
+                "format": att.get("format") or "",
+                "length": att.get("length") or 0,
+                "external": bool(att.get("external")),
+                "data": base64.b64encode(att["data"]).decode("ascii") if att.get("data") else "",
+            }
+
         referrals = []
         request_key = int(txn.order_id) if txn.order_id else None
         if request_key:
             try:
                 raw = fetch_referral_attachments(site, request_key)
                 for att in raw:
-                    if att.get("external"):
-                        referrals.append({
-                            "name": att["name"],
-                            "format": att["format"],
-                            "data": "",
-                            "external": True,
-                        })
-                    elif att["data"]:
-                        referrals.append({
-                            "name": att["name"],
-                            "format": att["format"],
-                            "data": base64.b64encode(att["data"]).decode("ascii"),
-                        })
+                    # Keep external rows even when we couldn't load bytes — the
+                    # UI shows them as "available in Karisma".
+                    if att.get("external") or att.get("data"):
+                        referrals.append(_serialise(att))
             except Exception as e:
                 logger.warning("Failed to fetch referral attachments: %s", e)
 
@@ -1209,11 +1209,8 @@ def get_attachments(transcription_id: int):
             try:
                 raw = fetch_worksheet_attachments(site, txn.report_instance_key)
                 for att in raw:
-                    worksheets.append({
-                        "name": att["name"],
-                        "format": att["format"],
-                        "data": base64.b64encode(att["data"]).decode("ascii"),
-                    })
+                    if att.get("external") or att.get("data"):
+                        worksheets.append(_serialise(att))
             except Exception as e:
                 logger.warning("Failed to fetch worksheet attachments: %s", e)
 
