@@ -246,10 +246,7 @@
                 {% for txn in items %}
                 {% set pname = txn.priority_name or '' %}
                 {% set pdisp = pname.replace('_', ' ') if pname else '' %}
-                {% set is_urgent = pname in urgent_names %}
-                <tr class="hover:bg-gray-50 cursor-pointer transition-colors {% if is_urgent %}bg-red-50/40 urgent-row{% endif %}"
-                    {% if is_urgent %}data-txn-id="{{ txn.id }}" data-urgent="1"{% endif %}
-                    onclick="window.location='/worklist/{{ txn.id }}'">
+                <tr class="hover:bg-gray-50 cursor-pointer transition-colors {% if pname in urgent_names %}bg-red-50/40{% endif %}" onclick="window.location='/worklist/{{ txn.id }}'">
                     <td class="px-3 py-3 whitespace-nowrap">
                         {% if pname == 'Immediate' %}
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-red-600 text-white">{{ pdisp }}</span>
@@ -322,16 +319,6 @@
                         {% endif %}
                     </td>
                 </tr>
-                {% if is_urgent %}
-                <tr class="urgent-docs-row bg-red-50/30" data-txn-id="{{ txn.id }}">
-                    <td colspan="11" class="px-4 py-2">
-                        <div class="urgent-docs-panel text-xs text-gray-400 flex items-center" data-txn-id="{{ txn.id }}">
-                            <svg class="animate-spin w-3.5 h-3.5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                            Loading documents…
-                        </div>
-                    </td>
-                </tr>
-                {% endif %}
                 {% else %}
                 <tr>
                     <td colspan="11" class="px-4 py-12 text-center text-gray-400">
@@ -525,93 +512,6 @@ function markReady(id, btn) {
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(currentFilters));
     }
-})();
-
-// ── Inline document preview for urgent rows ──
-//
-// For each urgent row on the visible page, hit /api/attachments/{id} and
-// render referrals + worksheets inline beneath the row. Fetch in small
-// concurrent batches so we don't hammer Karisma.
-(function() {
-    var panels = Array.prototype.slice.call(document.querySelectorAll('.urgent-docs-panel'));
-    if (panels.length === 0) return;
-
-    function fmtSize(n) {
-        if (!n) return '';
-        if (n > 1024 * 1024) return (n / (1024*1024)).toFixed(1) + ' MB';
-        if (n > 1024) return Math.round(n / 1024) + ' KB';
-        return n + ' B';
-    }
-    function esc(s) {
-        var d = document.createElement('div');
-        d.textContent = s == null ? '' : String(s);
-        return d.innerHTML;
-    }
-    function renderExternal(att) {
-        return '<div class="inline-block align-top mr-2 mb-2 px-2 py-1 bg-amber-50 border border-amber-200 rounded text-xs">'
-            + '<span class="font-medium text-amber-800">' + esc(att.name || 'attachment') + '</span>'
-            + (att.length ? ' <span class="text-amber-600">(' + fmtSize(att.length) + ')</span>' : '')
-            + ' <span class="text-amber-700">— SILO</span>'
-            + '</div>';
-    }
-    function renderInline(att, defaultFmt) {
-        var fmt = (att.format || defaultFmt || '').toLowerCase();
-        var label = '<div class="text-xs text-gray-500 mb-1 flex justify-between"><span class="truncate">' + esc(att.name) + '</span>'
-                  + (att.length ? '<span class="ml-2 flex-shrink-0">' + fmtSize(att.length) + '</span>' : '') + '</div>';
-        if (fmt === 'pdf') {
-            return '<div class="inline-block align-top mr-3 mb-2" style="width: 480px;">' + label
-                 + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded bg-white" style="height: 360px;"></iframe>'
-                 + '</div>';
-        }
-        return '<div class="inline-block align-top mr-3 mb-2" style="width: 280px;">' + label
-             + '<img src="data:image/' + (fmt || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer bg-white" onclick="event.stopPropagation(); window.open(this.src);" />'
-             + '</div>';
-    }
-
-    function renderInto(panel, data) {
-        var refs = data.referrals || [];
-        var ws = data.worksheets || [];
-        if (refs.length === 0 && ws.length === 0) {
-            panel.innerHTML = '<span class="text-xs text-gray-400">No documents on file for this urgent study.</span>';
-            return;
-        }
-        var html = '<div class="flex flex-wrap items-start" onclick="event.stopPropagation()">';
-        if (refs.length) {
-            html += '<div class="w-full text-xs font-semibold text-gray-600 mb-1">Referrals (' + refs.length + ')</div>';
-            refs.forEach(function(att) {
-                html += att.external ? renderExternal(att) : renderInline(att, 'pdf');
-            });
-        }
-        if (ws.length) {
-            html += '<div class="w-full text-xs font-semibold text-gray-600 mt-1 mb-1">Worksheets (' + ws.length + ')</div>';
-            ws.forEach(function(att) {
-                html += att.external ? renderExternal(att) : renderInline(att, 'png');
-            });
-        }
-        html += '</div>';
-        panel.innerHTML = html;
-    }
-
-    // Concurrency-limited fetch queue
-    var CONCURRENCY = 3;
-    var queue = panels.slice();
-    var active = 0;
-
-    function pump() {
-        while (active < CONCURRENCY && queue.length) {
-            var panel = queue.shift();
-            var id = panel.getAttribute('data-txn-id');
-            active++;
-            fetch('/api/attachments/' + id)
-                .then(function(r) { return r.ok ? r.json() : { referrals: [], worksheets: [] }; })
-                .then(function(data) { renderInto(panel, data); })
-                .catch(function() {
-                    panel.innerHTML = '<span class="text-xs text-red-500">Failed to load documents.</span>';
-                })
-                .then(function() { active--; pump(); });
-        }
-    }
-    pump();
 })();
 </script>
 {% endblock %}
