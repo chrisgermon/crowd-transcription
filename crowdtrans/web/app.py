@@ -103,6 +103,39 @@ def _from_json(value):
 
 templates.env.filters["from_json"] = _from_json
 
+
+# All UI timestamps are rendered in Australian Eastern Time (AEST/AEDT — DST
+# transitions handled automatically by Australia/Sydney). Times stored via
+# datetime.utcnow() in our DB are naive UTC; times pulled from Karisma's
+# LastDictationCompleteDateTime are naive AEST (the Karisma SQL Server runs
+# at UTC+10), so we expose two filters.
+import datetime as _datetime
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _AEST = _ZoneInfo("Australia/Sydney")
+except Exception:  # pragma: no cover — Python <3.9 fallback
+    _AEST = _datetime.timezone(_datetime.timedelta(hours=10))
+
+
+def _aest_from_utc(dt, fmt: str = "%Y-%m-%d %H:%M"):
+    """Render a naive-UTC datetime as Australia/Sydney local time."""
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_datetime.timezone.utc)
+    return dt.astimezone(_AEST).strftime(fmt)
+
+
+def _aest_passthrough(dt, fmt: str = "%Y-%m-%d %H:%M"):
+    """Render a datetime already in AEST (e.g. from Karisma) without conversion."""
+    if dt is None:
+        return ""
+    return dt.strftime(fmt)
+
+
+templates.env.filters["aest"] = _aest_from_utc
+templates.env.filters["aest_local"] = _aest_passthrough
+
 # Import routes after templates is defined to avoid circular import
 from crowdtrans.web.routes import api, compare, dashboard, learning, login, settings, transcriptions, voice, worklist  # noqa: E402
 

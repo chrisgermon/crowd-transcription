@@ -50,7 +50,7 @@
             {{ txn.procedure_description or '' }}
             {% if txn.modality_code %}<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">{{ txn.modality_code }}</span>{% endif %}
             &middot; Dr {{ txn.doctor_family_name or '?' }}
-            &middot; {{ txn.dictation_date.strftime('%Y-%m-%d %H:%M') if txn.dictation_date else '—' }}
+            &middot; {{ (txn.dictation_date | aest_local) or '—' }}
             {% if txn.facility_name %}&middot; {{ txn.facility_name }}{% endif %}
         </p>
     </div>
@@ -197,7 +197,7 @@
                     class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
                 Undo — Mark as Ready
             </button>
-            <span class="text-sm text-gray-500">Copied {{ txn.copied_at.strftime('%Y-%m-%d %H:%M') if txn.copied_at else '' }}</span>
+            <span class="text-sm text-gray-500">Copied {{ txn.copied_at | aest }}</span>
             <button onclick="verifyReport()" id="verify-btn"
                     class="inline-flex items-center px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700">
                 Verify &amp; Sign Off
@@ -208,7 +208,7 @@
             </a>
             {% elif txn.worklist_status == 'verified' %}
             <span class="text-sm text-green-700 font-medium">
-                Verified by {{ txn.verified_by or '?' }} · {{ txn.verified_at.strftime('%Y-%m-%d %H:%M') if txn.verified_at else '' }}
+                Verified by {{ txn.verified_by or '?' }} · {{ txn.verified_at | aest }}
             </span>
             <a href="/worklist/{{ txn.id }}/print" target="_blank"
                class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
@@ -305,7 +305,7 @@
                 {% endif %}
                 <div>
                     <dt class="text-gray-400">Dictation Date</dt>
-                    <dd class="font-medium text-gray-900">{{ txn.dictation_date.strftime('%Y-%m-%d %H:%M') if txn.dictation_date else '—' }}</dd>
+                    <dd class="font-medium text-gray-900">{{ (txn.dictation_date | aest_local) or '—' }}</dd>
                 </div>
             </dl>
         </div>
@@ -354,7 +354,7 @@
                 </div>
                 <div>
                     <dt class="text-gray-400">Transcribed At</dt>
-                    <dd class="font-medium text-gray-900">{{ txn.transcription_completed_at.strftime('%Y-%m-%d %H:%M') if txn.transcription_completed_at else '—' }}</dd>
+                    <dd class="font-medium text-gray-900">{{ (txn.transcription_completed_at | aest) or '—' }}</dd>
                 </div>
             </dl>
         </div>

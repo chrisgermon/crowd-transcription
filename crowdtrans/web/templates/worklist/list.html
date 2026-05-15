@@ -287,10 +287,10 @@
                         Dr {{ txn.doctor_family_name or '?' }}
                     </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
-                        {{ txn.dictation_date.strftime('%Y-%m-%d %H:%M') if txn.dictation_date else '—' }}
+                        {{ (txn.dictation_date | aest_local) or '—' }}
                     </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
-                        {{ txn.transcription_completed_at.strftime('%Y-%m-%d %H:%M') if txn.transcription_completed_at else '—' }}
+                        {{ (txn.transcription_completed_at | aest) or '—' }}
                     </td>
                     <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600 max-w-[160px] truncate" title="{{ txn.facility_name or '' }}">
                         {{ txn.facility_name or '—' }}
