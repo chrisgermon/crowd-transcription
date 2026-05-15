@@ -1168,46 +1168,149 @@
                     if (n > 1024) return Math.round(n / 1024) + ' KB';
                     return n + ' B';
                 }
-                function renderExternal(att) {
-                    return '<div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded">'
-                        + '<p class="text-sm font-medium text-amber-800">'
-                        + escapeHTML(att.name || 'attachment')
-                        + (att.length ? ' <span class="text-amber-600 font-normal text-xs">(' + fmtSize(att.length) + ')</span>' : '')
-                        + '</p>'
-                        + '<p class="text-xs text-amber-700 mt-1">Stored on the Karisma SILO — bytes not reachable from CrowdScription. Open in Karisma to view.</p>'
-                        + '</div>';
+
+                // Two independent lists, switched via tabs, paginated with arrows within each.
+                var lists = {
+                    referrals: (data.referrals || []).map(function(a) {
+                        return { att: a, defaultFmt: 'pdf' };
+                    }),
+                    worksheets: (data.worksheets || []).map(function(a) {
+                        return { att: a, defaultFmt: 'png' };
+                    }),
+                };
+
+                if (!lists.referrals.length && !lists.worksheets.length) {
+                    panel.innerHTML = '<p class="text-sm text-gray-400 py-2">No referral documents or worksheets attached to this request in Karisma.</p>';
+                    if (btn) { btn.disabled = false; btn.querySelector('span').textContent = 'Reload'; }
+                    return;
                 }
-                function renderInline(att, defaultFmt) {
-                    var fmt = (att.format || defaultFmt || '').toLowerCase();
-                    var header = '<div class="flex items-center justify-between text-xs text-gray-500 mb-1">'
-                               + '<span class="truncate">' + escapeHTML(att.name) + '</span>'
-                               + (att.length ? '<span class="ml-2 flex-shrink-0">' + fmtSize(att.length) + '</span>' : '')
-                               + '</div>';
-                    if (fmt === 'pdf') {
-                        return '<div class="mb-4">' + header
-                            + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded bg-gray-50" style="height: 70vh;"></iframe></div>';
+
+                window._attLists = lists;
+                window._attTab = lists.referrals.length ? 'referrals' : 'worksheets';
+                window._attIdxByTab = { referrals: 0, worksheets: 0 };
+
+                function bodyHTML(item) {
+                    var att = item.att;
+                    if (att.external) {
+                        return '<div class="p-4 bg-amber-50 border border-amber-200 rounded">'
+                            + '<p class="text-sm font-medium text-amber-800">'
+                            + escapeHTML(att.name || 'attachment')
+                            + (att.length ? ' <span class="text-amber-600 font-normal text-xs">(' + fmtSize(att.length) + ')</span>' : '')
+                            + '</p>'
+                            + '<p class="text-xs text-amber-700 mt-1">Stored on the Karisma SILO — bytes not reachable from CrowdScription. Open in Karisma to view.</p>'
+                            + '</div>';
                     }
-                    return '<div class="mb-4">' + header
-                        + '<img src="data:image/' + (fmt || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer" onclick="window.open(this.src)" title="Click to open full size" /></div>';
+                    var fmt = (att.format || item.defaultFmt || '').toLowerCase();
+                    if (fmt === 'pdf') {
+                        return '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded bg-gray-50" style="height: 75vh;"></iframe>';
+                    }
+                    return '<img src="data:image/' + (fmt || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer" onclick="window.open(this.src)" title="Click to open full size" />';
                 }
 
-                var html = '';
+                window._renderAttachment = function() {
+                    var tab = window._attTab;
+                    var items = (window._attLists || {})[tab] || [];
+                    if (!items.length) return;
+                    var idx = window._attIdxByTab[tab] || 0;
+                    if (idx < 0) idx = 0;
+                    if (idx >= items.length) idx = items.length - 1;
+                    window._attIdxByTab[tab] = idx;
+                    var item = items[idx];
+                    var att = item.att;
 
-                if (data.referrals && data.referrals.length > 0) {
-                    html += '<h4 class="text-sm font-semibold text-gray-700 mb-2">Referrals <span class="text-gray-400 font-normal">(' + data.referrals.length + ')</span></h4>';
-                    data.referrals.forEach(function(att) {
-                        html += att.external ? renderExternal(att) : renderInline(att, 'pdf');
+                    // Tab buttons — active styling + counts
+                    ['referrals','worksheets'].forEach(function(t) {
+                        var btnEl = document.getElementById('att-tab-' + t);
+                        if (!btnEl) return;
+                        var n = (window._attLists[t] || []).length;
+                        btnEl.querySelector('.att-tab-count').textContent = n ? '(' + n + ')' : '';
+                        btnEl.disabled = (n === 0);
+                        btnEl.classList.toggle('border-blue-500', t === tab && n > 0);
+                        btnEl.classList.toggle('text-blue-600', t === tab && n > 0);
+                        btnEl.classList.toggle('border-transparent', t !== tab || n === 0);
+                        btnEl.classList.toggle('text-gray-500', t !== tab || n === 0);
+                    });
+
+                    var indicator = document.getElementById('att-indicator');
+                    if (indicator) {
+                        indicator.textContent = (idx + 1) + ' / ' + items.length;
+                    }
+                    var nameEl = document.getElementById('att-name');
+                    if (nameEl) {
+                        nameEl.textContent = att.name || '';
+                        nameEl.title = att.name || '';
+                    }
+                    var sizeEl = document.getElementById('att-size');
+                    if (sizeEl) {
+                        sizeEl.textContent = att.length ? fmtSize(att.length) : '';
+                    }
+                    var body = document.getElementById('att-body');
+                    if (body) body.innerHTML = bodyHTML(item);
+                    var prev = document.getElementById('att-prev');
+                    var next = document.getElementById('att-next');
+                    var single = items.length <= 1;
+                    if (prev) { prev.disabled = single || (idx === 0); }
+                    if (next) { next.disabled = single || (idx >= items.length - 1); }
+                };
+
+                window._attNav = function(delta) {
+                    var tab = window._attTab;
+                    var items = (window._attLists || {})[tab] || [];
+                    if (items.length <= 1) return;
+                    var n = items.length;
+                    // Wrap around within the active tab.
+                    window._attIdxByTab[tab] = ((window._attIdxByTab[tab] || 0) + delta + n) % n;
+                    window._renderAttachment();
+                };
+
+                window._attSwitchTab = function(tab) {
+                    if (!window._attLists || !window._attLists[tab] || !window._attLists[tab].length) return;
+                    window._attTab = tab;
+                    window._renderAttachment();
+                };
+
+                // Shell: tabs row → meta row (prev / indicator+name / next) → body
+                panel.innerHTML =
+                    '<div class="flex border-b mb-2">'
+                    + '<button id="att-tab-referrals" type="button" class="px-3 py-2 text-sm font-medium border-b-2 -mb-px focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed">'
+                    + 'Referrals <span class="att-tab-count text-gray-400 font-normal ml-1"></span>'
+                    + '</button>'
+                    + '<button id="att-tab-worksheets" type="button" class="px-3 py-2 text-sm font-medium border-b-2 -mb-px focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed">'
+                    + 'Worksheets <span class="att-tab-count text-gray-400 font-normal ml-1"></span>'
+                    + '</button>'
+                    + '</div>'
+                    + '<div class="flex items-center justify-between mb-2 gap-2">'
+                    + '<button id="att-prev" type="button" class="p-1 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0" title="Previous (←)" aria-label="Previous">'
+                    + '<svg class="w-5 h-5 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>'
+                    + '</button>'
+                    + '<div class="flex-1 text-center px-2 min-w-0">'
+                    + '<div id="att-indicator" class="text-sm font-semibold text-gray-700"></div>'
+                    + '<div class="text-xs text-gray-500 truncate"><span id="att-name"></span><span id="att-size" class="ml-2 text-gray-400"></span></div>'
+                    + '</div>'
+                    + '<button id="att-next" type="button" class="p-1 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0" title="Next (→)" aria-label="Next">'
+                    + '<svg class="w-5 h-5 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>'
+                    + '</button>'
+                    + '</div>'
+                    + '<div id="att-body"></div>';
+
+                document.getElementById('att-prev').addEventListener('click', function() { window._attNav(-1); });
+                document.getElementById('att-next').addEventListener('click', function() { window._attNav(1); });
+                document.getElementById('att-tab-referrals').addEventListener('click', function() { window._attSwitchTab('referrals'); });
+                document.getElementById('att-tab-worksheets').addEventListener('click', function() { window._attSwitchTab('worksheets'); });
+
+                // Arrow keys page within the active tab — but skip if user is typing.
+                if (!window._attKeysBound) {
+                    window._attKeysBound = true;
+                    document.addEventListener('keydown', function(e) {
+                        if (!window._attLists) return;
+                        var tag = (e.target && e.target.tagName) || '';
+                        if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+                        if (e.key === 'ArrowLeft') { window._attNav(-1); }
+                        else if (e.key === 'ArrowRight') { window._attNav(1); }
                     });
                 }
 
-                if (data.worksheets && data.worksheets.length > 0) {
-                    html += '<h4 class="text-sm font-semibold text-gray-700 mb-2 mt-4">Worksheets <span class="text-gray-400 font-normal">(' + data.worksheets.length + ')</span></h4>';
-                    data.worksheets.forEach(function(att) {
-                        html += att.external ? renderExternal(att) : renderInline(att, 'png');
-                    });
-                }
-
-                panel.innerHTML = html;
+                window._renderAttachment();
                 if (btn) { btn.disabled = false; btn.querySelector('span').textContent = 'Reload'; }
             })
             .catch(function(err) {
