@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ txn.patient_given_names or '' }} {{ txn.patient_family_name or 'Patient' }} — CrowdScription{% endblock %}
+{% block main_classes %}w-full px-4 lg:px-6 py-4{% endblock %}
 
 {% block content %}
 <!-- Navigation bar -->
@@ -108,9 +109,9 @@
 </div>
 {% endif %}
 
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Report text (2/3) -->
-    <div class="lg:col-span-2">
+<div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-12 gap-4">
+    <!-- Report editor (xl: 5/12, lg: 1/2) -->
+    <div class="xl:col-span-5">
         <div class="bg-white rounded-lg shadow" id="report-card">
             <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
                 <h2 class="text-lg font-semibold text-gray-900">Transcription</h2>
@@ -217,8 +218,28 @@
         </div>
     </div>
 
-    <!-- Metadata sidebar (1/3) -->
-    <div class="space-y-4">
+    <!-- Documents column (xl: 5/12, lg: 1/2) — auto-loaded on page open -->
+    <div class="xl:col-span-5">
+        <div class="bg-white rounded-lg shadow" id="documents-card">
+            <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Documents</h2>
+                <button onclick="loadAttachments()" id="attachments-load-btn"
+                        class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-sm font-medium text-gray-600 bg-white hover:bg-gray-50">
+                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    <span>Reload</span>
+                </button>
+            </div>
+            <div id="attachments-panel" class="p-4 max-h-[calc(100vh-12rem)] overflow-y-auto">
+                <div class="flex items-center text-sm text-gray-400">
+                    <svg class="animate-spin w-4 h-4 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    Loading documents…
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Metadata sidebar (xl: 2/12, lg: full row below) -->
+    <div class="xl:col-span-2 lg:col-span-2 space-y-3">
         <!-- Patient -->
         <div class="bg-white rounded-lg shadow p-4">
             <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Patient</h3>
@@ -296,18 +317,6 @@
             <div class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{{ txn.worksheet_notes }}</div>
         </div>
         {% endif %}
-
-        <!-- Referral & Worksheet Attachments -->
-        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-amber-400">
-            <div class="flex items-center justify-between mb-2">
-                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Documents</h3>
-                <button onclick="loadAttachments()" id="attachments-load-btn"
-                        class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">Load</button>
-            </div>
-            <div id="attachments-panel">
-                <p class="text-xs text-gray-400">Click "Load" to view referral documents and worksheets.</p>
-            </div>
-        </div>
 
         <!-- Report Templates -->
         <div class="bg-white rounded-lg shadow p-4 border-l-4 border-purple-400">
@@ -1132,8 +1141,15 @@
     window.loadAttachments = function() {
         var panel = document.getElementById('attachments-panel');
         var btn = document.getElementById('attachments-load-btn');
-        btn.textContent = 'Loading...';
-        btn.disabled = true;
+        if (btn) {
+            btn.disabled = true;
+            btn.querySelector('span') && (btn.querySelector('span').textContent = 'Loading…');
+        }
+        panel.innerHTML = '<div class="flex items-center text-sm text-gray-400">'
+            + '<svg class="animate-spin w-4 h-4 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">'
+            + '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>'
+            + '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>'
+            + '</svg>Loading documents…</div>';
 
         fetch('/api/attachments/' + TXN_ID)
             .then(function(r) { return r.json(); })
@@ -1141,9 +1157,8 @@
                 var hasContent = (data.referrals && data.referrals.length > 0) ||
                                  (data.worksheets && data.worksheets.length > 0);
                 if (!hasContent) {
-                    panel.innerHTML = '<p class="text-xs text-gray-400">No referral documents or worksheets found.</p>';
-                    btn.textContent = 'Load';
-                    btn.disabled = false;
+                    panel.innerHTML = '<p class="text-sm text-gray-400 py-2">No referral documents or worksheets attached to this request in Karisma.</p>';
+                    if (btn) { btn.disabled = false; btn.querySelector('span').textContent = 'Reload'; }
                     return;
                 }
 
@@ -1154,51 +1169,57 @@
                     return n + ' B';
                 }
                 function renderExternal(att) {
-                    return '<div class="mb-2 p-2 bg-amber-50 border border-amber-200 rounded">'
-                        + '<p class="text-xs font-medium text-amber-800">'
+                    return '<div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded">'
+                        + '<p class="text-sm font-medium text-amber-800">'
                         + escapeHTML(att.name || 'attachment')
-                        + (att.length ? ' <span class="text-amber-600 font-normal">(' + fmtSize(att.length) + ')</span>' : '')
+                        + (att.length ? ' <span class="text-amber-600 font-normal text-xs">(' + fmtSize(att.length) + ')</span>' : '')
                         + '</p>'
-                        + '<p class="text-xs text-amber-700">Stored on the Karisma SILO — open in Karisma to view.</p>'
+                        + '<p class="text-xs text-amber-700 mt-1">Stored on the Karisma SILO — bytes not reachable from CrowdScription. Open in Karisma to view.</p>'
                         + '</div>';
                 }
                 function renderInline(att, defaultFmt) {
                     var fmt = (att.format || defaultFmt || '').toLowerCase();
+                    var header = '<div class="flex items-center justify-between text-xs text-gray-500 mb-1">'
+                               + '<span class="truncate">' + escapeHTML(att.name) + '</span>'
+                               + (att.length ? '<span class="ml-2 flex-shrink-0">' + fmtSize(att.length) + '</span>' : '')
+                               + '</div>';
                     if (fmt === 'pdf') {
-                        return '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">'
-                            + escapeHTML(att.name) + '</p>'
-                            + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded" style="height:400px;"></iframe></div>';
+                        return '<div class="mb-4">' + header
+                            + '<iframe src="data:application/pdf;base64,' + att.data + '" class="w-full border rounded bg-gray-50" style="height: 70vh;"></iframe></div>';
                     }
-                    return '<div class="mb-2"><p class="text-xs text-gray-500 mb-1">' + escapeHTML(att.name) + '</p>'
+                    return '<div class="mb-4">' + header
                         + '<img src="data:image/' + (fmt || 'png') + ';base64,' + att.data + '" class="w-full border rounded cursor-pointer" onclick="window.open(this.src)" title="Click to open full size" /></div>';
                 }
 
                 var html = '';
 
                 if (data.referrals && data.referrals.length > 0) {
-                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1">Referral Documents <span class="text-gray-400 font-normal">(' + data.referrals.length + ')</span></h4>';
+                    html += '<h4 class="text-sm font-semibold text-gray-700 mb-2">Referrals <span class="text-gray-400 font-normal">(' + data.referrals.length + ')</span></h4>';
                     data.referrals.forEach(function(att) {
                         html += att.external ? renderExternal(att) : renderInline(att, 'pdf');
                     });
                 }
 
                 if (data.worksheets && data.worksheets.length > 0) {
-                    html += '<h4 class="text-xs font-semibold text-gray-600 mb-1 mt-3">Worksheets <span class="text-gray-400 font-normal">(' + data.worksheets.length + ')</span></h4>';
+                    html += '<h4 class="text-sm font-semibold text-gray-700 mb-2 mt-4">Worksheets <span class="text-gray-400 font-normal">(' + data.worksheets.length + ')</span></h4>';
                     data.worksheets.forEach(function(att) {
                         html += att.external ? renderExternal(att) : renderInline(att, 'png');
                     });
                 }
 
                 panel.innerHTML = html;
-                btn.textContent = 'Reload';
-                btn.disabled = false;
+                if (btn) { btn.disabled = false; btn.querySelector('span').textContent = 'Reload'; }
             })
             .catch(function(err) {
-                panel.innerHTML = '<p class="text-xs text-red-500">Error: ' + escapeHTML(err.message) + '</p>';
-                btn.textContent = 'Load';
-                btn.disabled = false;
+                panel.innerHTML = '<p class="text-sm text-red-500 py-2">Error: ' + escapeHTML(err.message) + '</p>';
+                if (btn) { btn.disabled = false; btn.querySelector('span').textContent = 'Reload'; }
             });
     };
+
+    // Auto-load on page open
+    document.addEventListener('DOMContentLoaded', function() {
+        if (typeof window.loadAttachments === 'function') window.loadAttachments();
+    });
 
     // ── Report templates ──
 
