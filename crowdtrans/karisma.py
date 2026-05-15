@@ -973,6 +973,22 @@ WHERE RIC.ReportInstanceKey = %d
 ORDER BY RIA.TransactionKey DESC
 """
 
+# Karisma also stores referrals (FormType "Documents") and ultrasound worksheets
+# (FormType "SonoReview") via Karisma.Form.Record + Karisma.Form.Image. This is
+# where the volume actually lives — Request.Attachment only has ~1k rows for the
+# whole site, while Form.Image has ~8M.
+FORM_ATTACHMENTS_QUERY = """\
+SELECT FT.Code AS FormTypeCode, FI.Comment, FI.Sequence,
+       E.Buffer, E.[Format], E.[Length], E.[Handle]
+FROM [Current].[Karisma.Form.Record] FR
+JOIN [Current].[Karisma.Form.Type] FT ON FT.[Key] = FR.FormTypeKey
+JOIN [Current].[Karisma.Form.Image] FI ON FI.FormRecordKey = FR.[Key]
+JOIN [System].[Extent] E ON E.[Key] = FI.ContentKey
+WHERE FR.RequestKey = %d
+  AND FR.IsDiscarded = 0
+ORDER BY FR.AddedTime ASC, FI.Sequence ASC
+"""
+
 
 def _fetch_external_extent(handle: bytes) -> bytes | None:
     """Resolve a Kestral external extent by Handle (16-byte GUID).
@@ -1074,6 +1090,55 @@ def fetch_referral_attachments(site: SiteConfig, request_key: int) -> list[dict[
                     "external": external,
                 })
             return results
+    finally:
+        conn.close()
+
+
+def fetch_form_attachments(site: SiteConfig, request_key: int) -> dict[str, list[dict[str, Any]]]:
+    """Fetch Form.Image attachments for a request.
+
+    Returns ``{"documents": [...], "sono_review": [...]}``. "Documents" are
+    treated as referrals by callers; "SonoReview" as worksheets. Each entry
+    has the same shape as fetch_referral_attachments / fetch_worksheet_attachments.
+    """
+    out: dict[str, list[dict[str, Any]]] = {"documents": [], "sono_review": []}
+    if not request_key:
+        return out
+    conn = _get_connection(site)
+    try:
+        with conn.cursor(as_dict=False) as cur:
+            cur.execute(FORM_ATTACHMENTS_QUERY, (request_key,))
+            for idx, row in enumerate(cur):
+                code, comment, seq, buf, fmt, length, handle = row
+                if buf:
+                    data = bytes(buf)
+                    external = False
+                elif handle:
+                    fetched = _fetch_external_extent(bytes(handle))
+                    if fetched:
+                        data = fetched
+                        external = False
+                    else:
+                        data = b""
+                        external = True
+                else:
+                    data = b""
+                    external = False
+                bucket = "documents" if (code or "").lower() == "documents" else \
+                         "sono_review" if (code or "").lower() == "sonoreview" else None
+                if bucket is None:
+                    continue
+                # Karisma rarely puts a name on Form.Images — synthesise one.
+                kind_label = "Referral" if bucket == "documents" else "Worksheet"
+                name = comment or f"{kind_label} {idx + 1}"
+                out[bucket].append({
+                    "name": name,
+                    "data": data,
+                    "format": (fmt or "").lstrip(".") or ("jpg" if bucket == "sono_review" else "pdf"),
+                    "length": length or 0,
+                    "external": external,
+                })
+            return out
     finally:
         conn.close()
 

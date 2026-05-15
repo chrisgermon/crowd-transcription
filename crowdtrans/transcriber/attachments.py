@@ -120,6 +120,7 @@ def cache_attachments(site: SiteConfig, txn) -> dict[str, int]:
     from crowdtrans.karisma import (
         fetch_referral_attachments,
         fetch_worksheet_attachments,
+        fetch_form_attachments,
     )
 
     request_key = None
@@ -137,9 +138,18 @@ def cache_attachments(site: SiteConfig, txn) -> dict[str, int]:
         except Exception:
             logger.exception("[%s] cache_attachments: referrals fetch failed for %s",
                              site.site_id, txn.id)
+        # Karisma also stores referrals + sono-review worksheets via Form.Image —
+        # this is the high-volume path (~8M rows vs ~1k in Request.Attachment).
+        try:
+            forms = fetch_form_attachments(site, request_key)
+            referrals.extend(forms.get("documents", []))
+            worksheets.extend(forms.get("sono_review", []))
+        except Exception:
+            logger.exception("[%s] cache_attachments: form fetch failed for %s",
+                             site.site_id, txn.id)
     if rik:
         try:
-            worksheets = fetch_worksheet_attachments(site, rik)
+            worksheets.extend(fetch_worksheet_attachments(site, rik))
         except Exception:
             logger.exception("[%s] cache_attachments: worksheets fetch failed for %s",
                              site.site_id, txn.id)
