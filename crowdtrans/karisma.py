@@ -977,18 +977,20 @@ ORDER BY RIA.TransactionKey DESC
 def _fetch_external_extent(handle: bytes) -> bytes | None:
     """Resolve a Kestral external extent by Handle (16-byte GUID).
 
-    Karisma stores large PDFs/images outside the DB. The Handle is a binary
-    GUID — typically used as a filename under a configured share. This
-    function looks for the file under env-configured roots and returns its
-    bytes if found.
+    Karisma stores large PDFs/images on the SILO file share. The Handle is a
+    binary GUID; the on-disk layout (verified against the live SILO) is:
 
-    Configure via env: KARISMA_EXTENT_ROOTS = colon-separated absolute
-    paths to search. Two layouts are probed in each root:
-      - flat: ``<root>/<guid>.<ext>``
-      - Kestral nested: ``<root>/<AA>/<BB>/<guid>.<ext>`` (first 4 hex chars
-        of the GUID split into two two-char dirs)
-    GUID byte-orderings (LE/BE), case (lower/upper), and dash-stripping are
-    all tried. Returns None when not found.
+        <root>/<chars 9-10>/<chars 14-15>/<dashed-guid>.dat
+
+    where the chars are positions in the standard display GUID
+    ``xxxxxxxx-XXxx-XXxx-yyyy-zzzzzzzzzzzz`` — the two ``XX`` pairs are the
+    bucket levels. SQL Server's ``uniqueidentifier`` stores the first three
+    groups little-endian, so we try both byte orderings.
+
+    Configure via env ``KARISMA_EXTENT_ROOTS`` — colon-separated absolute
+    roots, each pointing at the directory that contains the per-bucket
+    folders (typically ``/mnt/karisma-silo/Silo/Live/data``). For robustness
+    we also probe flat and lowercase variants. Returns None when not found.
     """
     import os
     import uuid as _uuid
@@ -1003,13 +1005,17 @@ def _fetch_external_extent(handle: bytes) -> bytes | None:
     except Exception:
         return None
 
-    # Build name candidates, capturing the leading hex for nested layouts
-    raw = []
+    suffixes = (".dat", "", ".pdf", ".jpeg", ".jpg", ".png", ".bin", ".tif", ".tiff")
+
+    # The dashed display form is what the SILO uses for filenames.
+    # Bucket dirs are derived from positions 9-10 and 14-15 of that string.
+    name_variants = []  # (filename_base, bucket_a, bucket_b)
     for g in (guid_le, guid_be):
-        s = str(g)
-        raw.extend([s, s.replace("-", ""), s.upper(), s.replace("-", "").upper()])
-    candidates = list({c for c in raw})
-    suffixes = ("", ".pdf", ".jpeg", ".jpg", ".png", ".bin", ".tif", ".tiff")
+        s = str(g)              # 'xxxxxxxx-XXxx-XXxx-yyyy-zzzzzzzzzzzz'
+        bucket_a = s[9:11]      # chars right after first dash
+        bucket_b = s[14:16]     # chars right after second dash
+        name_variants.append((s, bucket_a, bucket_b))
+        name_variants.append((s.upper(), bucket_a.upper(), bucket_b.upper()))
 
     for root in roots_env.split(":"):
         root = root.strip()
@@ -1018,12 +1024,8 @@ def _fetch_external_extent(handle: bytes) -> bytes | None:
         rp = Path(root)
         if not rp.exists():
             continue
-        for cand in candidates:
-            # First 4 hex chars (strip dashes) → AA/BB nested folders
-            hex_only = cand.replace("-", "")
-            aa, bb = hex_only[:2], hex_only[2:4]
-            for prefix in (rp, rp / aa / bb, rp / aa.upper() / bb.upper(),
-                           rp / aa.lower() / bb.lower()):
+        for cand, a, b in name_variants:
+            for prefix in (rp / a / b, rp):  # nested first (the SILO layout), then flat
                 for suffix in suffixes:
                     p = prefix / f"{cand}{suffix}"
                     if p.is_file():
