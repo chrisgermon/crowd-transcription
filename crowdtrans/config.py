@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     karisma_db_user: str = "Crowditreader"
     karisma_db_password: str = "Crowdbot1@"
     karisma_enabled: bool = True
+    # Colon-separated absolute paths to look up external Extents (SILO).
+    # Read by crowdtrans.karisma._fetch_external_extent directly via os.environ;
+    # declared here so pydantic-settings doesn't reject it as unknown.
+    karisma_extent_roots: str = ""
 
     # --- Deepgram ---
     deepgram_api_key: str = "413a9095e1114cb967eb77dac023ac8cbc7bc9b2"
