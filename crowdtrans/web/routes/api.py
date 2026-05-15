@@ -368,7 +368,7 @@ def reformat_all():
 
 @router.post("/worklist/{transcription_id}/mark-copied")
 def mark_copied(transcription_id: int):
-    """Mark a worklist item as copied."""
+    """Mark a worklist item as copied. Drops the cached attachments."""
     with SessionLocal() as session:
         txn = session.query(Transcription).filter_by(id=transcription_id).first()
         if not txn:
@@ -376,6 +376,8 @@ def mark_copied(transcription_id: int):
         txn.worklist_status = "copied"
         txn.copied_at = datetime.datetime.utcnow()
         session.commit()
+    from crowdtrans.transcriber.attachments import drop_cache
+    drop_cache(transcription_id)
     return {"status": "ok"}
 
 
@@ -407,6 +409,8 @@ async def verify_report(transcription_id: int, request: Request):
         txn.verified_by = verifier
         session.commit()
 
+    from crowdtrans.transcriber.attachments import drop_cache
+    drop_cache(transcription_id)
     return {"status": "ok", "verified_at": txn.verified_at.isoformat(), "verified_by": verifier}
 
 
@@ -1162,11 +1166,38 @@ def patient_search(q: str = Query("", min_length=2, description="Search query"))
 
 @router.get("/attachments/{transcription_id}")
 def get_attachments(transcription_id: int):
-    """Fetch referral PDFs and worksheet images for a transcription."""
+    """Fetch referral PDFs and worksheet images for a transcription.
+
+    Always serves from the local cache first (populated by the transcription
+    service right after each transcribe). Falls back to a live Karisma+SILO
+    fetch only if the cache is missing, and caches the result for next time.
+    """
     import base64
     import logging
     logger = logging.getLogger(__name__)
 
+    from crowdtrans.transcriber.attachments import (
+        read_cache, cache_attachments, has_cache,
+    )
+
+    def _serialise(att: dict) -> dict:
+        return {
+            "name": att.get("name") or "",
+            "format": att.get("format") or "",
+            "length": att.get("length") or 0,
+            "external": bool(att.get("external")),
+            "data": base64.b64encode(att["data"]).decode("ascii") if att.get("data") else "",
+        }
+
+    # --- Cache hit: bypass Karisma entirely ---
+    cached = read_cache(transcription_id)
+    if cached is not None:
+        return {
+            "referrals": [_serialise(a) for a in cached["referrals"]],
+            "worksheets": [_serialise(a) for a in cached["worksheets"]],
+        }
+
+    # --- Cache miss: pull live, then cache for next time ---
     with SessionLocal() as session:
         txn = session.query(Transcription).filter_by(id=transcription_id).first()
         if not txn:
@@ -1175,46 +1206,21 @@ def get_attachments(transcription_id: int):
             return {"referrals": [], "worksheets": []}
 
         from crowdtrans.config import Settings
-        settings = Settings()
-        site = settings.get_site("karisma")
+        site_settings = Settings()
+        site = site_settings.get_site("karisma")
         if not site:
             return {"referrals": [], "worksheets": []}
 
-        from crowdtrans.karisma import fetch_referral_attachments, fetch_worksheet_attachments
+        try:
+            cache_attachments(site, txn)
+        except Exception:
+            logger.exception("live cache_attachments failed for %s", transcription_id)
 
-        def _serialise(att: dict) -> dict:
-            return {
-                "name": att.get("name") or "",
-                "format": att.get("format") or "",
-                "length": att.get("length") or 0,
-                "external": bool(att.get("external")),
-                "data": base64.b64encode(att["data"]).decode("ascii") if att.get("data") else "",
-            }
-
-        referrals = []
-        request_key = int(txn.order_id) if txn.order_id else None
-        if request_key:
-            try:
-                raw = fetch_referral_attachments(site, request_key)
-                for att in raw:
-                    # Keep external rows even when we couldn't load bytes — the
-                    # UI shows them as "available in Karisma".
-                    if att.get("external") or att.get("data"):
-                        referrals.append(_serialise(att))
-            except Exception as e:
-                logger.warning("Failed to fetch referral attachments: %s", e)
-
-        worksheets = []
-        if txn.report_instance_key:
-            try:
-                raw = fetch_worksheet_attachments(site, txn.report_instance_key)
-                for att in raw:
-                    if att.get("external") or att.get("data"):
-                        worksheets.append(_serialise(att))
-            except Exception as e:
-                logger.warning("Failed to fetch worksheet attachments: %s", e)
-
-        return {"referrals": referrals, "worksheets": worksheets}
+    cached = read_cache(transcription_id) or {"referrals": [], "worksheets": []}
+    return {
+        "referrals": [_serialise(a) for a in cached["referrals"]],
+        "worksheets": [_serialise(a) for a in cached["worksheets"]],
+    }
 
 
 # ---------------------------------------------------------------------------

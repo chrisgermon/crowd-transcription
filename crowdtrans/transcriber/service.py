@@ -449,6 +449,21 @@ def _store_result(session, site: SiteConfig, txn: Transcription, result):
         method,
     )
 
+    # Pre-cache referral + worksheet attachments so the worklist detail page
+    # renders them instantly without hitting Karisma on every open.
+    try:
+        from crowdtrans.transcriber.attachments import cache_attachments
+        summary = cache_attachments(site, txn)
+        if summary.get("referrals") or summary.get("worksheets"):
+            logger.info(
+                "[%s] Cached attachments for %d: %d referrals, %d worksheets (%d external-only)",
+                site.site_id, txn.id,
+                summary.get("referrals", 0), summary.get("worksheets", 0),
+                summary.get("external_only", 0),
+            )
+    except Exception:
+        logger.exception("[%s] Attachment cache failed for %d", site.site_id, txn.id)
+
 
 # ---------------------------------------------------------------------------
 # Patient data backfill
@@ -743,6 +758,11 @@ def run(site_id: str | None = None):
                     discovered = _discover(session, site)
                     processed = _process_pending(session, site)
                     moved = _sync_ready_worklist(session, site)
+                    try:
+                        from crowdtrans.transcriber.attachments import maintain as _maintain_cache
+                        _maintain_cache(session, site, limit=10)
+                    except Exception:
+                        logger.exception("[%s] attachment cache maintenance failed", site.site_id)
                     if discovered > 0 or processed > 0 or moved > 0:
                         any_work = True
                     # Backfill disabled — only process new dictations

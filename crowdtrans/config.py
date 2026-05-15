@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # --- Local SQLite ---
     sqlite_db_path: Path = Path("/opt/crowdtrans/data/crowdtrans.db")
 
+    # --- Local attachment cache (referrals/worksheets for ready worklist items) ---
+    attachments_cache_dir: Path = Path("/opt/crowdtrans/data/attachments")
+
     # --- Transcription service defaults ---
     poll_interval_seconds: int = 30
     batch_size: int = 10
