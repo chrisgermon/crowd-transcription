@@ -607,6 +607,11 @@ def _sync_ready_worklist(session, site: SiteConfig, batch_size: int = 2000) -> i
     except Exception:
         return 0
 
+    # Newest-first: keeps the sync from getting stuck on a wedge of old
+    # orphan dictations at the bottom of the table that have no Karisma
+    # Report.Instance to look up. Without this, every batch picks the same
+    # 2k unsyncable rows by rowid order and the typed-but-not-yet-verified
+    # items further up never get reached.
     ready_items = (
         session.query(Transcription)
         .filter(
@@ -615,6 +620,7 @@ def _sync_ready_worklist(session, site: SiteConfig, batch_size: int = 2000) -> i
             Transcription.worklist_status == "ready",
             Transcription.source_dictation_id.isnot(None),
         )
+        .order_by(Transcription.id.desc())
         .limit(batch_size)
         .all()
     )
