@@ -630,10 +630,17 @@ def _sync_ready_worklist(session, site: SiteConfig, batch_size: int = 2000) -> i
     accessions = list({
         t.internal_identifier for t in ready_items if t.internal_identifier
     })
+    # Only run the by-TK fallback for orphans dictated within the last week.
+    # An orphan is a dictation with no Request.Record link in Karisma; older
+    # orphans almost never get retro-linked, so polling them every cycle is
+    # a pure MSSQL load tax. ~16k stale orphans currently sit in the table.
+    orphan_cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
     tk_orphans = [
         int(t.source_dictation_id)
         for t in ready_items
         if not t.internal_identifier
+        and t.dictation_date is not None
+        and t.dictation_date > orphan_cutoff
     ]
     try:
         by_acc = fetch_worklist_sync_state_by_accession(site, accessions)
