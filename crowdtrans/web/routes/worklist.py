@@ -55,8 +55,11 @@ def worklist_list(
     page: int = Query(1, ge=1),
 ):
     """List transcriptions ready for typists to copy into Karisma."""
-    # Default to today if no date filter specified
-    if not date_from and not date_to:
+    # Default to today for history views (copied/verified/all), but for the
+    # ready queue show everything: stale ready items still need attention,
+    # and items with NULL dictation_date would otherwise be permanently hidden
+    # while still inflating the "ready" badge count.
+    if not date_from and not date_to and wl_status != "ready":
         today_str = datetime.date.today().isoformat()
         date_from = today_str
         date_to = today_str
